@@ -3,4 +3,4 @@ config.ini
 venv/
 transaction_log.log
 general_log.log
-soltrade/__pycache__
+soltrade/__pycache__/
