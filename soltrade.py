@@ -5,7 +5,7 @@ from soltrade.log import log_general
 
 
 # Initialize configuration
-config_path = 'config.json'
+config_path = 'config.ini'
 config(config_path)
 
 

@@ -1,23 +1,19 @@
 import os
-import json
 import base58
+import configparser  # Import the configparser module
 
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
 from solana.rpc.api import Client
-from soltrade.log import log_general
+from log import log_general
 
 
 class Config:
     def __init__(self, path):
         self.path = path
-        self.api_key = None
+        self.birdeye_api_key = None
         self.private_key = None
         self.custom_rpc_https = None
-        self.usdc_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-        self.sol_mint = "So11111111111111111111111111111111111111112"
-        self.other_mint = None
-        self.other_mint_symbol = None
         self.price_update_seconds = None
         self.trading_interval_minutes = None
         self.slippage = None  # BPS
@@ -27,27 +23,23 @@ class Config:
     def load_config(self):
         if not os.path.exists(self.path):
             log_general.error(
-                "Soltrade was unable to detect the JSON file. Are you sure config.json has not been renamed or removed?")
+                "Soltrade was unable to detect the config file. Are you sure config.ini has not been renamed or removed?")
             exit(1)
 
-        with open(self.path, 'r') as file:
-            try:
-                config_data = json.load(file)
-                self.api_key = config_data["api_key"]
-                self.private_key = config_data["private_key"]
-                self.custom_rpc_https = config_data.get("custom_rpc_https") or "https://api.mainnet-beta.solana.com/"
-                self.other_mint = config_data.get("other_mint", "")
-                self.other_mint_symbol = config_data.get("other_mint_symbol", "UNKNOWN")
-                self.price_update_seconds = int(config_data.get("price_update_seconds", 60))
-                self.trading_interval_minutes = int(config_data.get("trading_interval_minutes", 1))
-                self.slippage = int(config_data.get("slippage", 50))
-                self.computeUnitPriceMicroLamports = int(config_data.get("computeUnitPriceMicroLamports", 20 * 14000))  # default fee of roughly $.04 today
-            except json.JSONDecodeError as e:
-                log_general.error(f"Error parsing JSON: {e}")
-                exit(1)
-            except KeyError as e:
-                log_general.error(f"Missing configuration key: {e}")
-                exit(1)
+        config = configparser.ConfigParser()
+        config.read(self.path)
+        
+        try:
+            self.birdeye_api_key = config.get('DATA', 'BIRDEYE_API_KEY')
+            self.private_key = config.get('KEYS', 'SOLANA_PRIVATE_KEY')
+            self.custom_rpc_https = config.get('RPC', 'DEFAULT_RPC')
+            self.price_update_seconds = config.getint('SETTINGS', 'PRICE_UPDATE_SECONDS')
+            self.trading_interval_minutes = config.getint('SETTINGS', 'TRADING_INTERVAL_MINUTES')
+            self.slippage = config.getint('SETTINGS', 'SLIPPAGE_TOLERANCE_BPS')
+            self.computeUnitPriceMicroLamports = config.getint('SETTINGS', 'COMPUTE_PRICE_MICRO_LAMPORTS') 
+        except (configparser.NoSectionError, configparser.NoOptionError) as e:
+            log_general.error(f"Missing configuration or section: {e}")
+            exit(1)
 
     @property
     def keypair(self):
