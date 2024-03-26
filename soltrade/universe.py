@@ -1,5 +1,7 @@
 import requests
 import time
+import sqlite3
+from datetime import datetime
 from config import config
 
 def fetch_coins_by_market_cap(min_cap=1_000_000, max_cap=250_000_000, retries=5, wait=60):
@@ -98,10 +100,61 @@ def filter_universe_by_volume_and_liquidity(universe, min_liquidity = 100_000, m
         
     return filtered_universe
 
+def update_tradeable_assets():
+    conn = sqlite3.connect('database/trading_algo.db')
+    c = conn.cursor()
 
-if __name__ == '__main__':
-    config_path = '.\config.ini'
-    config(config_path) 
+    # Fetch the current universe of tradeable assets
     universe = fetch_coins_by_market_cap()
     filtered_universe = filter_universe_by_volume_and_liquidity(universe)
     print(len(filtered_universe))
+    for coin in filtered_universe:
+        print(coin)
+
+    # First, update all assets to not currently tradeable before selectively enabling those that are.
+    c.execute("UPDATE tradeable_assets SET currently_tradeable = FALSE")
+    
+    not_in_universe_addresses = []
+
+    for asset in universe:
+        now = datetime.now()
+
+        # Check if the asset exists in the tradeable_assets table
+        c.execute("SELECT token_address FROM tradeable_assets WHERE token_address = ?", (asset['token_address'],))
+        exists = c.fetchone()
+
+        if exists:
+            # Update the currently_tradeable flag for existing assets
+            c.execute("UPDATE tradeable_assets SET currently_tradeable = TRUE WHERE token_address = ?", (asset['token_address'],))
+        else:
+            # Insert new asset into tradeable_assets
+            c.execute('''INSERT INTO tradeable_assets (token_address, name, symbol, creation_datetime, currently_tradeable)
+                         VALUES (?, ?, ?, ?, ?)''', 
+                      (asset['token_address'], asset['name'], asset['symbol'], asset['creation_datetime'], True))
+
+        # Always insert a new entry into tradeable_asset_info
+        c.execute('''INSERT INTO tradeable_asset_info (datetime, token_address, top10holderspct, volume, 
+                     volume_change_pct, market_cap, liquidity, volume_pct_market_cap)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', 
+                  (now, asset['token_address'], asset.get('top10holderspct'), asset.get('volume'), 
+                   asset.get('volume_change_pct'), asset.get('market_cap'), asset.get('liquidity'), asset.get('volume_pct_market_cap')))
+
+    # Get the list of token addresses that exist in the database but are not in the universe
+    c.execute("SELECT token_address FROM tradeable_assets WHERE currently_tradeable = FALSE")
+    not_in_universe_addresses = [row[0] for row in c.fetchall()]
+
+    # Commit changes
+    conn.commit()
+    conn.close()
+
+    # Handle assets not currently tradeable
+    if not_in_universe_addresses:
+        update_not_currently_tradeable_assets(not_in_universe_addresses)
+
+def update_not_currently_tradeable_assets(addresses):
+    print(addresses)
+    # need to implement maybe async
+
+config_path = '.\config.ini'
+config(config_path) 
+update_tradeable_assets()
