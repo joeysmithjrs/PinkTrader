@@ -8,7 +8,8 @@ def fetch_coins_by_market_cap(min_cap=1_000_000, max_cap=250_000_000, retries=5,
 
     universe = {n : [] for n in range(1, 6)}
     retry_count, offset = 0, 0
-    exhausted = False
+    conn = sqlite3.connect('../trading_algo.db')
+    c = conn.cursor()
 
     while offset <= 500:
 
@@ -32,10 +33,7 @@ def fetch_coins_by_market_cap(min_cap=1_000_000, max_cap=250_000_000, retries=5,
                 address = str(coin.get('address', '_') or '_')
                 symbol = str(coin.get('symbol', '_') or '_')
 
-                preliminaries = volume != 0 and market_cap != 0 and liquidity != 0 and name != '_' and address != '_' and symbol != '_' and 'Wormhole' not in name
-
-                if (min_cap < market_cap < max_cap) and preliminaries:
-                    entry = {
+                entry = {
                         'address': coin['address'],
                         'symbol': coin['symbol'],
                         'name': coin['name'],
@@ -45,7 +43,22 @@ def fetch_coins_by_market_cap(min_cap=1_000_000, max_cap=250_000_000, retries=5,
                         'liquidity': liquidity,
                         'volume_pct_market_cap': volume / market_cap
                     }
-                    # print(entry)
+                now = datetime.now()
+                # Check if the asset exists in the tradeable_assets table
+                c.execute("SELECT token_address FROM tradeable_assets WHERE token_address = ?", (entry['address'],))
+                exists = c.fetchone()
+
+                if exists:
+                    url = f"https://public-api.birdeye.so/defi/token_security?address={entry['address']}"
+                    top10 = requests.get(url, headers=headers).json()['data'].get('Top10HoldersPercent')
+                    c.execute('''INSERT INTO tradeable_asset_info (datetime, token_address, top10holderspct, volume, 
+                                volume_change_pct, market_cap, liquidity, volume_pct_market_cap)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', (now, entry['token_address'], top10, entry.get('volume'), 
+                            entry.get('volume_change_pct'), entry.get('market_cap'), entry.get('liquidity'), entry.get('volume_pct_market_cap')))
+                    
+                preliminaries = volume != 0 and market_cap != 0 and liquidity != 0 and name != '_' and address != '_' and symbol != '_' and 'Wormhole' not in name
+                
+                if (min_cap < market_cap < max_cap) and preliminaries:
                     match market_cap:
                         case mc if 1_000_000 <= mc < 5_000_000:
                             universe[1].append(entry)
@@ -71,6 +84,8 @@ def fetch_coins_by_market_cap(min_cap=1_000_000, max_cap=250_000_000, retries=5,
             break
     print(f"Initial universe filtering complete")
     print({key: len(val) for key, val in universe.items()})
+    conn.commit()
+    conn.close()
     return universe
 
 def filter_universe_by_age_and_safety(universe, min_hours_since_creation = 12, max_top_10_holders_pct = .30):
@@ -101,7 +116,7 @@ def filter_universe_by_volume_and_liquidity(universe, min_liquidity = 100_000, m
     return filtered_universe
 
 def update_tradeable_assets():
-    conn = sqlite3.connect('database/trading_algo.db')
+    conn = sqlite3.connect('../trading_algo.db')
     c = conn.cursor()
 
     # Fetch the current universe of tradeable assets
@@ -113,8 +128,6 @@ def update_tradeable_assets():
 
     # First, update all assets to not currently tradeable before selectively enabling those that are.
     c.execute("UPDATE tradeable_assets SET currently_tradeable = FALSE")
-    
-    not_in_universe_addresses = []
 
     for asset in universe:
         now = datetime.now()
@@ -131,29 +144,18 @@ def update_tradeable_assets():
             c.execute('''INSERT INTO tradeable_assets (token_address, name, symbol, creation_datetime, currently_tradeable)
                          VALUES (?, ?, ?, ?, ?)''', 
                       (asset['token_address'], asset['name'], asset['symbol'], asset['creation_datetime'], True))
-
-        # Always insert a new entry into tradeable_asset_info
-        c.execute('''INSERT INTO tradeable_asset_info (datetime, token_address, top10holderspct, volume, 
-                     volume_change_pct, market_cap, liquidity, volume_pct_market_cap)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', 
-                  (now, asset['token_address'], asset.get('top10holderspct'), asset.get('volume'), 
-                   asset.get('volume_change_pct'), asset.get('market_cap'), asset.get('liquidity'), asset.get('volume_pct_market_cap')))
-
-    # Get the list of token addresses that exist in the database but are not in the universe
-    c.execute("SELECT token_address FROM tradeable_assets WHERE currently_tradeable = FALSE")
-    not_in_universe_addresses = [row[0] for row in c.fetchall()]
+            
+            # Add first entry into tradeable_asset_info
+            c.execute('''INSERT INTO tradeable_asset_info (datetime, token_address, top10holderspct, volume, 
+                        volume_change_pct, market_cap, liquidity, volume_pct_market_cap)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', 
+                    (now, asset['token_address'], asset.get('top10holderspct'), asset.get('volume'), 
+                    asset.get('volume_change_pct'), asset.get('market_cap'), asset.get('liquidity'), asset.get('volume_pct_market_cap')))
 
     # Commit changes
     conn.commit()
     conn.close()
 
-    # Handle assets not currently tradeable
-    if not_in_universe_addresses:
-        update_not_currently_tradeable_assets(not_in_universe_addresses)
-
-def update_not_currently_tradeable_assets(addresses):
-    print(addresses)
-    # need to implement maybe async
 
 config_path = '.\config.ini'
 config(config_path) 
