@@ -18,7 +18,6 @@ upper_bb = lower_bb = 0
 rsi = 0
 price = 0
 
-
 # Pulls the candlestick information in fifteen minute intervals
 def fetch_candlestick():
     url = "https://min-api.cryptocompare.com/data/v2/histominute"

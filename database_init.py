@@ -38,6 +38,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS tradeable_asset_prices (
     low REAL,
     close REAL,
     volume REAL,
+    interval TEXT,
     FOREIGN KEY (token_address) REFERENCES tradeable_assets (token_address)
     ON DELETE CASCADE
 )''')

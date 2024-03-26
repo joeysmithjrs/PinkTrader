@@ -1,7 +1,7 @@
 import requests
 import time
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from config import config
 
 def fetch_coins_by_market_cap(min_cap=1_000_000, max_cap=250_000_000, retries=5, wait=60):
@@ -156,6 +156,60 @@ def update_tradeable_assets():
     conn.commit()
     conn.close()
 
+def fetch_new_ohlcv_data(token_address, interval, unix_time_start, unix_time_end, retries=5, wait_time=60):
+    url = f"https://public-api.birdeye.so/defi/ohlcv?address={token_address}&type={interval}&time_from={unix_time_start}&time_to={unix_time_end}"
+    try:
+        response = requests.get(url)
+        if response.status_code == 200 and response.json().get("success"):
+            return response.json().get("data", {}).get("items", [])
+        else:
+            # If response code is not 200 or success flag is False, raise an exception to trigger a retry
+            raise Exception(f"Failed to fetch data: {response.status_code} {response.text}")
+    except Exception as e:
+        if retries > 0:
+            print(f"Error fetching data, retrying in {wait_time} seconds... Error: {e}")
+            time.sleep(wait_time)
+            return fetch_new_ohlcv_data(token_address, interval, unix_time_start, unix_time_end, retries-1, wait_time*2)
+        else:
+            print(f"Failed to fetch data after retries. Error: {e}")
+            return []
+
+def update_tradeable_asset_prices(interval='1H'):
+    conn = sqlite3.connect('../trading_algo.db')
+    c = conn.cursor()
+
+    c.execute("SELECT token_address FROM tradeable_assets WHERE currently_tradeable = TRUE")
+    token_addresses = [row[0] for row in c.fetchall()]
+
+    now = datetime.now()
+    unix_time_end = int(time.mktime(now.timetuple()))
+
+    for token_address in token_addresses:
+        c.execute('''SELECT datetime FROM tradeable_asset_prices WHERE token_address = ? AND interval = ? ORDER BY datetime DESC LIMIT 1''', 
+                  (token_address, interval))
+        result = c.fetchone()
+
+        if result:
+            last_update = datetime.strptime(result[0], '%Y-%m-%d %H:%M:%S')
+            unix_time_start = int(time.mktime(last_update.timetuple()))
+        else:
+            c.execute("SELECT creation_datetime FROM tradeable_assets WHERE token_address = ?", (token_address,))
+            creation_datetime = datetime.strptime(c.fetchone()[0], '%Y-%m-%d %H:%M:%S')
+            if now - creation_datetime < timedelta(weeks=1):
+                unix_time_start = int(time.mktime(creation_datetime.timetuple()))
+            else:
+                unix_time_start = int(time.mktime((now - timedelta(weeks=1)).timetuple()))
+
+        new_ohlcv_data = fetch_new_ohlcv_data(token_address, interval, unix_time_start, unix_time_end)
+
+        for data_point in new_ohlcv_data:
+            c.execute('''INSERT INTO tradeable_asset_prices (token_address, datetime, open, high, low, close, volume, interval)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                      (token_address, datetime.fromtimestamp(data_point["unixTime"]).strftime('%Y-%m-%d %H:%M:%S'), 
+                       data_point["o"], data_point["h"], data_point["l"], data_point["c"], data_point["v"], interval))
+
+    conn.commit()
+    conn.close()
 
 config_path = '.\config.ini'
 config(config_path) 
