@@ -28,6 +28,9 @@ c.execute('''CREATE TABLE IF NOT EXISTS tradeable_asset_info (
     ON DELETE CASCADE
 )''')
 
+# Composite index for tradeable_asset_info
+c.execute('''CREATE INDEX idx_tradeable_asset_info_datetime_token ON tradeable_asset_info(datetime, token_address);''')
+
 # Create table for tradeable asset prices
 c.execute('''CREATE TABLE IF NOT EXISTS tradeable_asset_prices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,6 +45,9 @@ c.execute('''CREATE TABLE IF NOT EXISTS tradeable_asset_prices (
     FOREIGN KEY (token_address) REFERENCES tradeable_assets (token_address)
     ON DELETE CASCADE
 )''')
+
+# Composite index for tradeable_asset_prices
+c.execute('''CREATE INDEX idx_tradeable_asset_prices_datetime_token ON tradeable_asset_prices(datetime, token_address);''')
 
 # Create table for algorithmic trades
 c.execute('''CREATE TABLE IF NOT EXISTS algorithmic_trades (
@@ -72,4 +78,4 @@ c.execute('''CREATE TABLE IF NOT EXISTS portfolio_balances (
 conn.commit()
 conn.close()
 
-print("Database initialized successfully.")
+print("Database initialized successfully with indexes for optimized reading operations.")
