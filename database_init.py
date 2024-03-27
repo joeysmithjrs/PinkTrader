@@ -62,6 +62,18 @@ c.execute('''CREATE TABLE IF NOT EXISTS algorithmic_trades (
     ON DELETE CASCADE
 )''')
 
+# Create table for portfolio composition by strategy
+c.execute('''CREATE TABLE IF NOT EXISTS portfolio_composition_by_strategy (
+          id INTEGER PRIMARY KEY AUTOINCREMENT
+          token_address TEXT NOT NULL
+          strategyID TEXT NOT NULL
+          token_balance REAL 
+          FOREIGN KEY (token_address) REFERENCES tradeable_assets (token_address)
+          ON DELETE CASCADE
+)
+''')
+
+
 # Create table for portfolio balances
 c.execute('''CREATE TABLE IF NOT EXISTS portfolio_balances (
     datetime DATETIME NOT NULL,
