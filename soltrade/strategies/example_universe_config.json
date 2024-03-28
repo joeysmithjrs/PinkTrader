@@ -1,0 +1,19 @@
+{
+    "universe_id": "1m_250m_universe_1",
+    "platform": "solana",
+    "static_token_address_list": [],
+    "intervals": ["5m", "15m"],
+    "query_limit": 500,
+    "market_cap_bins": [
+        [1000000, 5000000],
+        [5000000, 25000000],
+        [25000000, 50000000],
+        [50000000, 100000000],
+        [100000000, 250000000]
+    ],
+    "min_hours_since_creation": 10,
+    "max_top_10_holders_pct": 0.30,
+    "min_liquidity": 100000,
+    "min_volume_pct_market_cap_quintile": 3,
+    "min_volume_change_pct_quintile": 3
+}

@@ -55,6 +55,14 @@ class Strategy:
             tokens = [row[0] for row in rows]
         return tokens
 
+    async def query_tradeable_assets(self):
+        tokens = []
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute("SELECT DISTINCT token_address FROM portfolio_composition_by_strategy WHERE strategyID=?", (self.strategyID,))
+            rows = await cur.fetchall()
+            tokens = [row[0] for row in rows]
+        return tokens
+
     async def fetch_ohlcv_data(self, token_address, interval):
         data = []
         async with aiosqlite.connect(self.db_path) as db:

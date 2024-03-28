@@ -9,6 +9,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS tradeable_assets (
     token_address TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     symbol TEXT NOT NULL,
+    platform TEXT NOT NULL,
     creation_datetime DATETIME NOT NULL,
     currently_tradeable BOOLEAN NOT NULL
 )''')
@@ -72,7 +73,6 @@ c.execute('''CREATE TABLE IF NOT EXISTS portfolio_composition_by_strategy (
           ON DELETE CASCADE
 )
 ''')
-
 
 # Create table for portfolio balances
 c.execute('''CREATE TABLE IF NOT EXISTS portfolio_balances (

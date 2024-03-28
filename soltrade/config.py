@@ -11,6 +11,8 @@ from log import log_general
 class Config:
     def __init__(self, path):
         self.path = path
+        self.database_path = None
+        self.simulation_database_path = None
         self.birdeye_api_key = None
         self.private_key = None
         self.custom_rpc_https = None
@@ -30,6 +32,8 @@ class Config:
         config.read(self.path)
         
         try:
+            self.database_path = config.get('PATHS', 'DATABASE_PATH')
+            self.simulation_database_path = config.get('PATHS', 'SIMULATION_DATABASE_PATH')
             self.birdeye_api_key = config.get('DATA', 'BIRDEYE_API_KEY')
             self.private_key = config.get('KEYS', 'SOLANA_PRIVATE_KEY')
             self.custom_rpc_https = config.get('RPC', 'DEFAULT_RPC')

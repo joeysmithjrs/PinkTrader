@@ -1,0 +1,21 @@
+{
+    "strategy_id": "EMACrossoverStrategy1",
+    "universe_id": "1m_250m_universe_1",
+    "price_update_minutes": 5,
+    "intervals": ["5m", "15m"],
+    "minimum_periods": 20,
+    "base_token_address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "parameters": {
+        "5m_slow_ema_period": 10,
+        "5m_fast_ema_period": 5,
+        "15m_slow_ema_period": 10,
+        "15m_fast_ema_period": 5
+    },
+    "risk_management": {
+        "portfolio_allocation_pct": 1,
+        "buy_size_limit_pct": 0.10,
+        "stop_loss_pct": 0,
+        "take_profit_pct": 0,
+        "trailing_stop_loss_pct": 0
+    }
+}
