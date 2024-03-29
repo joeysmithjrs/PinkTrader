@@ -3,13 +3,14 @@ import json
 
 from solders.pubkey import Pubkey
 from solana.rpc.types import TokenAccountOpts
+from solana.exceptions import SolanaRpcException
 
-from soltrade.utils import handle_rate_limiting
+from soltrade.utils import handle_rate_limiting_solana_rpc
 from soltrade.config import config
 
 
 # Returns the current balance of token in the wallet
-@handle_rate_limiting()
+@handle_rate_limiting_solana_rpc()
 def find_balance(token_mint):
     if token_mint == config().sol_mint:
         balance_response = config().client.get_balance(config().public_address).value
