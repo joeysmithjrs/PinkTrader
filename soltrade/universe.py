@@ -18,7 +18,6 @@ class Universe:
         self.token_list_sort_by = self.configs.get('token_list_sort_by')
         self.token_list_sort_type = self.configs.get('token_list_sort_type')
         self.page_limit = self.configs.get('token_list_page_limit')
-        self.static_token_address_list = self.configs.get('static_token_address_list')
         self.intervals = self.configs.get('intervals')
         self.api_token_fetch_limit = self.configs.get('api_token_fetch_limit')
         self.market_cap_bins = self.configs.get('market_cap_bins')
@@ -61,19 +60,21 @@ class Universe:
             self.close_database_connection()
             exit()
 
-    def update_tradeable_assets_info(self, entry):
-        now = datetime.now()
-        top10 = self.fetch_token_security_info(entry)
-        self.cur.execute('''INSERT INTO tradeable_asset_info (datetime, token_address, top10holderspct, volume, 
-                    volume_change_pct, market_cap, liquidity, volume_pct_market_cap)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', (now, entry.get('token_address'), top10, entry.get('volume'), 
-                    entry.get('volume_change_pct'), entry.get('market_cap'), entry.get('liquidity'), entry.get('volume_pct_market_cap')))
+    def set_currently_tradeable_to_false(self):
+        self.cur.execute(f"UPDATE tradeable_assets SET {self.universe_id} = FALSE")
         self.conn.commit()
-        log_general.info(f"Token info updated for token_address: {entry.get('token_address')} for universe_id: {self.configs.get('universe_id')}")
-    
+
+    def set_currently_tradeable_to_true(self, token_address):
+        self.cur.execute(f"UPDATE tradeable_assets SET {self.universe_id} = TRUE WHERE token_address = {token_address}")
+        self.conn.commit()
+
+    def get_all_currently_tradeable_assets(self):
+        self.cur.execute(f"SELECT token_address FROM tradeable_assets WHERE {self.universe_id} = TRUE")
+        return [row[0] for row in self.cur.fetchall()]
+
     @handle_rate_limiting_birdeye()
-    def fetch_token_security_info(self, entry):
-        url = f"https://public-api.birdeye.so/defi/token_security?address={entry.get('address')}"
+    def fetch_token_security_info(self, token_address):
+        url = f"https://public-api.birdeye.so/defi/token_security?address={token_address}"
         return requests.get(url, headers=self.headers)
     
     @handle_rate_limiting_birdeye()
@@ -81,26 +82,57 @@ class Universe:
         url = f"https://public-api.birdeye.so/public/tokenlist?sort_by={self.configs.get("token_list_sort_by")}&sort_type={self.configs.get("token_list_sort_type")}&offset={offset}&limit={self.configs.get("token_list_page_limit")}"
         return requests.get(url, headers=self.headers)
     
+    @handle_rate_limiting_birdeye()
+    def fetch_new_ohlcv_data(self, token_address, interval, unix_time_start, unix_time_end):
+        url = f"https://public-api.birdeye.so/defi/ohlcv?address={token_address}&type={interval}&time_from={unix_time_start}&time_to={unix_time_end}"
+        return requests.get(url, headers=self.headers)
+    
+    def token_exists_in_database(self, token_address):
+        self.cur.execute("SELECT token_address FROM tradeable_assets WHERE token_address = ?", (token_address))
+        return self.curr.fetchone()
+    
+    def insert_into_tradeable_assets_info(self, entry):
+        now = time.time()
+        self.cur.execute('''INSERT INTO tradeable_asset_info (unixtime, token_address, top_10_holders_pct, volume, 
+                    volume_change_pct, market_cap, liquidity, volume_pct_market_cap)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', (now, entry.get('token_address'), entry.get('top_10_holders_pct'), entry.get('volume'), 
+                    entry.get('volume_change_pct'), entry.get('market_cap'), entry.get('liquidity'), entry.get('volume_pct_market_cap')))
+        self.conn.commit()
+        log_general.info(f"token_address: {entry.get('token_address')} information updated in tradeable_assets_info for universe_id: {self.configs.get('universe_id')}")
+
+    def insert_into_tradaeble_assets(self, entry):
+        self.cur.execute('''INSERT INTO tradeable_assets (token_address, name, symbol, platform, creation_unixtime, ?)
+                  VALUES (?, ?, ?, ?, ?)''', 
+                  (self.universe_id, entry['token_address'], entry['name'], entry['symbol'], self.platform, entry['creation_time'], True))
+        self.conn.commit()
+        log_general.info(f"token_address: {entry.get('token_address')} added to tradeable_assets and set true for universe_id: {self.configs.get('universe_id')}")
+
+    def insert_into_tradeable_asset_prices(self, token_address, entries, interval):
+        for data_point in entries:
+            self.cur.execute('''INSERT INTO tradeable_asset_prices (token_address, unixtime, open, high, low, close, volume, interval)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', (token_address, data_point["unixTime"],data_point["o"], data_point["h"], data_point["l"], data_point["c"], data_point["v"], interval))
+        self.conn.commit()
+        log_general.info(f"{len(entries)} OHCLV data points added to tradeable_asset_prices for token_address: {token_address} interval: {interval}")
+
     def fill_entry(self, coin):
         volume = float(coin.get('v24hUSD', 0) or 0)
         volume_change_pct = float(coin.get('v24hChangePercent', 0) or 0)
         market_cap = float(coin.get('mc', 0) or 0)
         liquidity = float(coin.get("liquidity", 0) or 0)
         name = str(coin.get('name', '_') or '_')
-        address = str(coin.get('address', '_') or '_')
+        token_address = str(coin.get('address', '_') or '_')
         symbol = str(coin.get('symbol', '_') or '_')
+        security_info = self.fetch_token_security_info(token_address)
+        top10holderspct = float(security_info['data'].get('top_10_holders_pct'))
+        creation_time = int(security_info['data'].get('creationTime'))
 
-        entry = {'address': coin['address'], 'symbol': coin['symbol'],
-                'name': coin['name'], 'volume': volume,
+        entry = {'token_address': token_address, 'symbol': symbol, 'name': name, 'volume': volume,
                 'volume_change_pct': volume_change_pct, 'market_cap': market_cap,
-                'liquidity': liquidity, 'volume_pct_market_cap': volume / market_cap}
-        preliminaries = volume != 0 and market_cap != 0 and liquidity != 0 and name != '_' and address != '_' and symbol != '_' and 'Wormhole' not in name
+                'liquidity': liquidity, 'volume_pct_market_cap': volume / market_cap,
+                'top_10_holders_pct': top10holderspct, 'creation_time': creation_time}
+        preliminaries = volume != 0 and market_cap != 0 and liquidity != 0 and name != '_' and token_address != '_' and symbol != '_' and 'Wormhole' not in name
 
         return entry, preliminaries
-    
-    def token_exists_in_database(self, token_address):
-        self.cur.execute("SELECT token_address FROM tradeable_assets WHERE token_address = ?", (token_address))
-        return self.curr.fetchone()
 
     def fetch_coins_by_market_cap(self):
 
@@ -109,16 +141,14 @@ class Universe:
         min_mc, max_mc = self.market_cap_bins[0][0], self.market_cap_bins[-1][1]
         offset = 0
         while offset <= self.api_token_fetch_limit:
-
             coins = self.fetch_token_list_page(offset)
             if not coins:
                 break  
             for coin in coins['data']['tokens']:
                 entry, preliminaries = self.fill_entry(coin)
                 market_cap = entry.get('market_cap')
-                if self.token_exists_in_database(entry.get('address')):
-                    self.update_token_info()
-                                    
+                if self.token_exists_in_database(entry.get('token_address')):
+                    self.insert_into_tradeable_assets_info(entry)
                 if (min_mc < market_cap < max_mc) and preliminaries:
                     for idx, (lower_bound, upper_bound) in enumerate(self.market_cap_bins, start=1):
                         if lower_bound <= market_cap < upper_bound:
@@ -129,125 +159,113 @@ class Universe:
         self.close_database_connection()
         return universe
 
-    def filter_universe_by_age_and_safety(self, universe):
-        pass
-
+    def filter_universe_by_age_and_security(self, universe):
+        min_creation_time = time.time() - (self.min_hours_since_creation * 3600)
+        filtered_universe = {n: [] for n in range(1, len(self.market_cap_bins) + 1)}
+        
+        total_initial_count = sum(len(universe[key]) for key in universe)
+        total_filtered_count = 0
+        
+        for key in universe:
+            filtered_universe[key] = [
+                asset for asset in universe[key]
+                if asset['top_10_holders_pct'] <= self.max_top_10_holders_pct 
+                and asset['creation_time'] <= min_creation_time
+            ]
+            total_filtered_count += len(filtered_universe[key])
+        
+        total_filtered_out_percentage = round((1 - float(total_filtered_count / total_initial_count)) * 100, 2)
+        log_general.info(f"{total_filtered_out_percentage}% of initial universe filtered out by age and security for universe_id: {self.universe_id}")
+        
+        return filtered_universe
+    
     def filter_universe_by_volume_and_liquidity(self, universe):
         def calculate_quintile_indices(length):
             return [int(length * i / 5) for i in range(len(self.market_cap_bins)+1)]
-        
+
         def filter_by_quintile(data, key, min_quintile):
-            if len(data) < 5:  # If less than 5 items, exclude the whole tier
+            if len(data) == 0:
                 return []
+            if 0 < len(data) < 5:
+                return [max(data, key=lambda x: x[key])]
+
             sorted_data = sorted(data, key=lambda x: x[key])
             indices = calculate_quintile_indices(len(sorted_data))
             quintile_cutoff_index = indices[min_quintile - 1]
             return sorted_data[quintile_cutoff_index:]
-        
+
+
+        total_initial_count = sum(len(coins) for _, coins in universe.items())
         filtered_universe = []
+
         for _, coins in universe.items():
             liquidity_filtered_coins = [coin for coin in coins if coin['liquidity'] >= self.min_liquidity]
-
             volume_market_cap_filtered = filter_by_quintile(liquidity_filtered_coins, 'volume_pct_market_cap', self.min_volume_pct_market_cap_quintile)
-
             final_filtered = filter_by_quintile(volume_market_cap_filtered, 'volume_change_pct', self.min_volume_change_pct_quintile)
-            
             filtered_universe.extend(final_filtered)
-            
+
+        total_filtered_count = len(filtered_universe)
+        total_filtered_out_percentage = round((1 - float(total_filtered_count / total_initial_count)) * 100, 2)
+
+        log_general.info(f"{total_filtered_out_percentage}% of initial universe further filtered out by volume and liquidity for universe_id: {self.universe_id}")
         return filtered_universe
 
+    
     def update_tradeable_assets(self):
         
+        log_general.info(f"Beginning universe selection process for universe_id: {self.universe_id}")
         universe = self.fetch_coins_by_market_cap()
-        filtered_universe = self.filter_universe_by_volume_and_liquidity(universe)
-        filtered_universe = self.filter_universe_by_age_and_safety(universe)
-
+        security_filtered_universe = self.filter_universe_by_age_and_security(universe)
+        final_filtered_universe = self.filter_universe_by_volume_and_liquidity(security_filtered_universe)
         log_general.info("Tradeable universe of composition ")
 
-        # First, update all assets to not currently tradeable before selectively enabling those that are.
-        c.execute("UPDATE tradeable_assets SET currently_tradeable = FALSE")
+        self.open_database_connection()
+        self.set_currently_tradeable_to_false()
 
-        for asset in universe:
-            now = datetime.now()
-
-            # Check if the asset exists in the tradeable_assets table
-            c.execute("SELECT token_address FROM tradeable_assets WHERE token_address = ?", (asset['token_address'],))
-            exists = c.fetchone()
-
-            if exists:
-                # Update the currently_tradeable flag for existing assets
-                c.execute("UPDATE tradeable_assets SET currently_tradeable = TRUE WHERE token_address = ?", (asset['token_address'],))
+        for asset in final_filtered_universe:
+            token_address = asset.get('token_address')
+            if self.token_exists_in_database(token_address):
+                self.set_currently_tradeable_to_true(token_address)
             else:
-                # Insert new asset into tradeable_assets
-                c.execute('''INSERT INTO tradeable_assets (token_address, name, symbol, creation_datetime, currently_tradeable)
-                            VALUES (?, ?, ?, ?, ?)''', 
-                        (asset['token_address'], asset['name'], asset['symbol'], asset['creation_datetime'], True))
-                
-                # Add first entry into tradeable_asset_info
-                c.execute('''INSERT INTO tradeable_asset_info (datetime, token_address, top10holderspct, volume, 
-                            volume_change_pct, market_cap, liquidity, volume_pct_market_cap)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', 
-                        (now, asset['token_address'], asset.get('top10holderspct'), asset.get('volume'), 
-                        asset.get('volume_change_pct'), asset.get('market_cap'), asset.get('liquidity'), asset.get('volume_pct_market_cap')))
+                self.insert_into_tradaeble_assets(asset)
+                self.insert_into_tradeable_assets_info(asset)
 
-        # Commit changes
-        conn.commit()
-        conn.close()
+        self.close_database_connection()
 
-# update using utils @handle_rate_limiting, potentially make async
-def fetch_new_ohlcv_data(token_address, interval, unix_time_start, unix_time_end, retries=5, wait_time=60):
-    url = f"https://public-api.birdeye.so/defi/ohlcv?address={token_address}&type={interval}&time_from={unix_time_start}&time_to={unix_time_end}"
-    try:
-        response = requests.get(url)
-        if response.status_code == 200 and response.json().get("success"):
-            return response.json().get("data", {}).get("items", [])
-        else:
-            # If response code is not 200 or success flag is False, raise an exception to trigger a retry
-            raise Exception(f"Failed to fetch data: {response.status_code} {response.text}")
-    except Exception as e:
-        if retries > 0:
-            print(f"Error fetching data, retrying in {wait_time} seconds... Error: {e}")
-            time.sleep(wait_time)
-            return fetch_new_ohlcv_data(token_address, interval, unix_time_start, unix_time_end, retries-1, wait_time*2)
-        else:
-            print(f"Failed to fetch data after retries. Error: {e}")
-            return []
+    def update_tradeable_asset_prices(self):
+        def interval_to_seconds(interval):
+            mapping = {
+                '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800,
+                '1H': 3600, '2H': 7200, '4H': 14400, '6H': 21600, '8H': 28800,
+                '12H': 43200, '1D': 86400, '3D': 259200, '1W': 604800, '1M': 2592000
+            }
+            return mapping.get(interval, 0)
 
-def update_tradeable_asset_prices(interval='1H'):
-    conn = sqlite3.connect(config.database_path)
-    c = conn.cursor()
+        self.open_database_connection()
+        unix_time_end = int(time.time())
+        token_addresses = self.get_all_currently_tradeable_assets()
 
-    c.execute("SELECT token_address FROM tradeable_assets WHERE currently_tradeable = TRUE")
-    token_addresses = [row[0] for row in c.fetchall()]
+        for token_address in token_addresses:
+            for interval in self.intervals:
+                self.cur.execute('''SELECT unixtime FROM tradeable_asset_prices WHERE token_address = ? AND interval = ? ORDER BY unixtime DESC LIMIT 1''', 
+                        (token_address, interval))
+                result = self.cur.fetchone()
 
-    now = datetime.now()
-    unix_time_end = int(time.mktime(now.timetuple()))
+                if result:
+                    last_update_unix = result[0]
+                else:
+                    self.cur.execute("SELECT creation_unixtime FROM tradeable_assets WHERE token_address = ?", (token_address,))
+                    creation_unixtime_result = self.cur.fetchone()
+                    creation_unixtime = creation_unixtime_result[0] if creation_unixtime_result else unix_time_end
+                    if unix_time_end - creation_unixtime < interval_to_seconds('1W'):
+                        last_update_unix = creation_unixtime
+                    else:
+                        last_update_unix = unix_time_end - interval_to_seconds('1W')
 
-    for token_address in token_addresses:
-        c.execute('''SELECT datetime FROM tradeable_asset_prices WHERE token_address = ? AND interval = ? ORDER BY datetime DESC LIMIT 1''', 
-                  (token_address, interval))
-        result = c.fetchone()
+                interval_seconds = interval_to_seconds(interval)
+                if unix_time_end - last_update_unix >= interval_seconds:
+                    new_ohlcv_data = self.fetch_new_ohlcv_data(token_address, interval, last_update_unix, unix_time_end).get("data", {}).get("items", [])
+                    if new_ohlcv_data:
+                        self.insert_into_tradeable_asset_prices(token_address, new_ohlcv_data, interval)
 
-        if result:
-            last_update = datetime.strptime(result[0], '%Y-%m-%d %H:%M:%S')
-            unix_time_start = int(time.mktime(last_update.timetuple()))
-        else:
-            c.execute("SELECT creation_datetime FROM tradeable_assets WHERE token_address = ?", (token_address,))
-            creation_datetime = datetime.strptime(c.fetchone()[0], '%Y-%m-%d %H:%M:%S')
-            if now - creation_datetime < timedelta(weeks=1):
-                unix_time_start = int(time.mktime(creation_datetime.timetuple()))
-            else:
-                unix_time_start = int(time.mktime((now - timedelta(weeks=1)).timetuple()))
-
-        new_ohlcv_data = fetch_new_ohlcv_data(token_address, interval, unix_time_start, unix_time_end)
-
-        for data_point in new_ohlcv_data:
-            c.execute('''INSERT INTO tradeable_asset_prices (token_address, datetime, open, high, low, close, volume, interval)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                      (token_address, datetime.fromtimestamp(data_point["unixTime"]).strftime('%Y-%m-%d %H:%M:%S'), 
-                       data_point["o"], data_point["h"], data_point["l"], data_point["c"], data_point["v"], interval))
-
-    conn.commit()
-    conn.close()
-
-update_tradeable_assets()
+        self.close_database_connection()

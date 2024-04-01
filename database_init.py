@@ -10,16 +10,15 @@ c.execute('''CREATE TABLE IF NOT EXISTS tradeable_assets (
     name TEXT NOT NULL,
     symbol TEXT NOT NULL,
     platform TEXT NOT NULL,
-    creation_datetime DATETIME NOT NULL,
-    currently_tradeable BOOLEAN NOT NULL
+    creation_unixtime INTEGER NOT NULL,
 )''')
 
 # Create table for tradeable asset info
 c.execute('''CREATE TABLE IF NOT EXISTS tradeable_asset_info (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    datetime DATETIME NOT NULL,
+    unixtime INTEGER NOT NULL,
     token_address TEXT NOT NULL,
-    top10holderspct REAL,
+    top_10_holders_pct REAL,
     volume REAL,
     volume_change_pct REAL,
     market_cap REAL,
@@ -36,7 +35,7 @@ c.execute('''CREATE INDEX idx_tradeable_asset_info_datetime_token ON tradeable_a
 c.execute('''CREATE TABLE IF NOT EXISTS tradeable_asset_prices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     token_address TEXT NOT NULL,
-    datetime DATETIME NOT NULL,
+    unixtime INTEGER NOT NULL,
     open REAL,
     high REAL,
     low REAL,
@@ -53,7 +52,7 @@ c.execute('''CREATE INDEX idx_tradeable_asset_prices_datetime_token ON tradeable
 # Create table for algorithmic trades
 c.execute('''CREATE TABLE IF NOT EXISTS algorithmic_trades (
     transactionID TEXT PRIMARY KEY,
-    datetime DATETIME NOT NULL,
+    unixtime INTEGER NOT NULL,
     token_address TEXT NOT NULL,
     strategyID TEXT NOT NULL,
     buy_sell TEXT NOT NULL,

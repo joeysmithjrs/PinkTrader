@@ -4,7 +4,6 @@
     "token_list_sort_by": "v24hUSD",
     "token_list_sort_type": "desc",
     "token_list_page_limit": 50,
-    "static_token_address_list": [],
     "intervals": ["5m", "15m"],
     "api_token_fetch_limit": 500,
     "market_cap_bins": [
