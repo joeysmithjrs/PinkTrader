@@ -4,7 +4,9 @@
     "token_list_sort_by": "v24hUSD",
     "token_list_sort_type": "desc",
     "token_list_page_limit": 50,
-    "intervals": ["5m", "15m"],
+    "intervals": ["15m", "1H"],
+    "tradeable_assets_update_minutes": 240,
+    "ohclv_update_minutes": 15,
     "api_token_fetch_limit": 500,
     "market_cap_bins": [
         [1000000, 5000000],

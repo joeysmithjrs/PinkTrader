@@ -2,7 +2,6 @@ import requests
 import json
 import time
 import sqlite3
-from datetime import datetime, timedelta
 from log import log_general
 from config import config
 from utils import handle_rate_limiting_birdeye
@@ -19,6 +18,8 @@ class Universe:
         self.token_list_sort_type = self.configs.get('token_list_sort_type')
         self.page_limit = self.configs.get('token_list_page_limit')
         self.intervals = self.configs.get('intervals')
+        self.tradeable_assets_update_minutes = self.configs.get('tradeable_assets_update_minutes')
+        self.ohclv_update_minutes = self.configs.get('ohclv_update_minutes')
         self.api_token_fetch_limit = self.configs.get('api_token_fetch_limit')
         self.market_cap_bins = self.configs.get('market_cap_bins')
         self.min_hours_since_creation = self.configs.get('min_hours_since_creation')
@@ -37,7 +38,7 @@ class Universe:
         self.close_database_connection()
 
     def open_database_connection(self):
-        self.conn = sqlite3.connect(self.configs.database_path)
+        self.conn = sqlite3.connect(config().database_path)
         self.cur = self.conn.cursor()
         log_general.info("SQLite Database connection opened")
     
@@ -48,18 +49,12 @@ class Universe:
 
     def init_df_column(self):
         self.open_database_connection()
-        column_name = self.configs.get('universe_id')
-        if column_name:
-            self.cur.execute(f"PRAGMA table_info(tradeable_assets)")
-            columns = [info[1] for info in self.cur.fetchall()]
-            if column_name not in columns:
-                self.cur.execute(f"ALTER TABLE tradeable_assets ADD COLUMN {column_name} BOOLEAN DEFAULT FALSE")
-                self.close_database_connection()
-        else:
-            log_general.error(f"Critical error: parameter ('universe_id') not found in {self.path}")
+        self.cur.execute(f"PRAGMA table_info(tradeable_assets)")
+        columns = [info[1] for info in self.cur.fetchall()]
+        if self.universe_id not in columns:
+            self.cur.execute(f"ALTER TABLE tradeable_assets ADD COLUMN {self.universe_id} BOOLEAN DEFAULT FALSE")
             self.close_database_connection()
-            exit()
-
+            
     def set_currently_tradeable_to_false(self):
         self.cur.execute(f"UPDATE tradeable_assets SET {self.universe_id} = FALSE")
         self.conn.commit()
@@ -79,7 +74,7 @@ class Universe:
     
     @handle_rate_limiting_birdeye()
     def fetch_token_list_page(self, offset):
-        url = f"https://public-api.birdeye.so/public/tokenlist?sort_by={self.configs.get("token_list_sort_by")}&sort_type={self.configs.get("token_list_sort_type")}&offset={offset}&limit={self.configs.get("token_list_page_limit")}"
+        url = f"https://public-api.birdeye.so/public/tokenlist?sort_by={self.token_list_sort_by}&sort_type={self.token_list_sort_type}&offset={offset}&limit={self.page_limit}"
         return requests.get(url, headers=self.headers)
     
     @handle_rate_limiting_birdeye()
@@ -89,23 +84,31 @@ class Universe:
     
     def token_exists_in_database(self, token_address):
         self.cur.execute("SELECT token_address FROM tradeable_assets WHERE token_address = ?", (token_address))
-        return self.curr.fetchone()
+        return self.cur.fetchone()
+    
+    def last_ohclv_update_unixtime(self, token_address, interval):
+        self.cur.execute('''SELECT unixtime FROM tradeable_asset_prices WHERE token_address = ? AND interval = ? ORDER BY unixtime DESC LIMIT 1''', (token_address, interval))
+        return self.cur.fetchone()
+    
+    def get_token_creation_unixtime(self, token_address):
+        self.cur.execute("SELECT creation_unixtime FROM tradeable_assets WHERE token_address = ?", (token_address))
+        return self.cur.fetchone()
     
     def insert_into_tradeable_assets_info(self, entry):
-        now = time.time()
+        now = int(time.time())
         self.cur.execute('''INSERT INTO tradeable_asset_info (unixtime, token_address, top_10_holders_pct, volume, 
                     volume_change_pct, market_cap, liquidity, volume_pct_market_cap)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', (now, entry.get('token_address'), entry.get('top_10_holders_pct'), entry.get('volume'), 
                     entry.get('volume_change_pct'), entry.get('market_cap'), entry.get('liquidity'), entry.get('volume_pct_market_cap')))
         self.conn.commit()
-        log_general.info(f"token_address: {entry.get('token_address')} information updated in tradeable_assets_info for universe_id: {self.configs.get('universe_id')}")
+        log_general.info(f"token_address: {entry.get('token_address')} information updated in tradeable_assets_info for universe_id: {self.universe_id}")
 
     def insert_into_tradaeble_assets(self, entry):
         self.cur.execute('''INSERT INTO tradeable_assets (token_address, name, symbol, platform, creation_unixtime, ?)
                   VALUES (?, ?, ?, ?, ?)''', 
                   (self.universe_id, entry['token_address'], entry['name'], entry['symbol'], self.platform, entry['creation_time'], True))
         self.conn.commit()
-        log_general.info(f"token_address: {entry.get('token_address')} added to tradeable_assets and set true for universe_id: {self.configs.get('universe_id')}")
+        log_general.info(f"token_address: {entry.get('token_address')} added to tradeable_assets and set true for universe_id: {self.universe_id}")
 
     def insert_into_tradeable_asset_prices(self, token_address, entries, interval):
         for data_point in entries:
@@ -160,7 +163,7 @@ class Universe:
         return universe
 
     def filter_universe_by_age_and_security(self, universe):
-        min_creation_time = time.time() - (self.min_hours_since_creation * 3600)
+        min_creation_time = int(time.time()) - (self.min_hours_since_creation * 3600)
         filtered_universe = {n: [] for n in range(1, len(self.market_cap_bins) + 1)}
         
         total_initial_count = sum(len(universe[key]) for key in universe)
@@ -233,6 +236,10 @@ class Universe:
         self.close_database_connection()
 
     def update_tradeable_asset_prices(self):
+        '''
+        This is a solution for the birdeye premium API subscription.
+        It would be more efficient to use websockets but the business API tier is 5x more expensive.
+        '''
         def interval_to_seconds(interval):
             mapping = {
                 '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800,
@@ -247,15 +254,11 @@ class Universe:
 
         for token_address in token_addresses:
             for interval in self.intervals:
-                self.cur.execute('''SELECT unixtime FROM tradeable_asset_prices WHERE token_address = ? AND interval = ? ORDER BY unixtime DESC LIMIT 1''', 
-                        (token_address, interval))
-                result = self.cur.fetchone()
-
+                result = self.last_ohclv_update_unixtime(self, token_address, interval)
                 if result:
                     last_update_unix = result[0]
                 else:
-                    self.cur.execute("SELECT creation_unixtime FROM tradeable_assets WHERE token_address = ?", (token_address,))
-                    creation_unixtime_result = self.cur.fetchone()
+                    creation_unixtime_result = self.get_token_creation_unixtime(token_address)
                     creation_unixtime = creation_unixtime_result[0] if creation_unixtime_result else unix_time_end
                     if unix_time_end - creation_unixtime < interval_to_seconds('1W'):
                         last_update_unix = creation_unixtime
@@ -264,7 +267,7 @@ class Universe:
 
                 interval_seconds = interval_to_seconds(interval)
                 if unix_time_end - last_update_unix >= interval_seconds:
-                    new_ohlcv_data = self.fetch_new_ohlcv_data(token_address, interval, last_update_unix, unix_time_end).get("data", {}).get("items", [])
+                    new_ohlcv_data = self.fetch_new_ohlcv_data(token_address, interval, last_update_unix, unix_time_end)["data"]["items"]
                     if new_ohlcv_data:
                         self.insert_into_tradeable_asset_prices(token_address, new_ohlcv_data, interval)
 
