@@ -3,6 +3,7 @@ import aiosqlite
 import json
 from log import log_general, log_transaction
 from utils import handle_sqlite_lock
+from wallet import find_balance
 from config import config
 from transactions import perform_swap
 
@@ -69,7 +70,7 @@ class Strategy:
         await asyncio.run(perform_swap("SELL", size, token_address))
 
     async def update_buy_size_limit(self):
-        self.buy_size_limit = await get_portfolio_balance_usdc() * 0.15
+        self.buy_size_limit = await find_balance(self.base_token_address) * 0.15
 
     async def query_portfolio_tokens(self):
         await self.open_database_connection()

@@ -56,7 +56,6 @@ class Portfolio:
 
     async def run_strategy_methods(self, strategy):
         """Schedule strategy-specific methods based on their timing configurations."""
-        # Assuming 'strategy' has attributes 'universe' and 'check_exit_rule_minutes'
         universe_config = self.universes[strategy.universe_id]
         await asyncio.gather(
             self.schedule_method(strategy.run, universe_config['ohclv_update_minutes']),
@@ -65,7 +64,6 @@ class Portfolio:
     
     async def run_universe_methods(self, universe):
         """Schedule universe-specific methods based on their timing configurations."""
-        # Assuming 'universe' object has 'tradeable_assets_update_minutes' and 'ohclv_update_minutes' attributes
         await asyncio.gather(
             self.schedule_method(universe.update_tradeable_assets, universe.tradeable_assets_update_minutes),
             self.schedule_method(universe.fetch_new_ohlc_data, universe.ohclv_update_minutes)
@@ -83,7 +81,7 @@ class Portfolio:
         # Wait on all scheduled tasks indefinitely
         # This will keep the program running as long as any of these tasks are still running
         await asyncio.gather(*tasks)
-        
+
 if __name__ == "__main__":
     portfolio_path = "/path/to/strategies"
     universes_path = "/path/to/universes"

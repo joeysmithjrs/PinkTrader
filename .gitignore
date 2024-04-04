@@ -5,3 +5,4 @@ transaction_log.log
 general_log.log
 soltrade/__pycache__/
 trading_algo.db
+todo.txt
