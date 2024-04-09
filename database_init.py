@@ -29,10 +29,10 @@ c.execute('''CREATE TABLE IF NOT EXISTS tradeable_asset_info (
 )''')
 
 # Composite index for tradeable_asset_info
-c.execute('''CREATE INDEX IF NOT EXISTS idx_tradeable_asset_info_datetime_token ON tradeable_asset_info(datetime, token_address);''')
+c.execute('''CREATE INDEX IF NOT EXISTS idx_tradeable_asset_info_unixtime_token ON tradeable_asset_info(unixtime, token_address);''')
 
 # Create table for tradeable asset prices
-c.execute('''CREATE TABLE IF NOT EXISTS tradeable_asset_prices (
+c.execute('''CREATE TABLE IF NOT EXISTS tradeable_asset_prices_indicators (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     token_address TEXT NOT NULL,
     unixtime INTEGER NOT NULL,
@@ -46,8 +46,8 @@ c.execute('''CREATE TABLE IF NOT EXISTS tradeable_asset_prices (
     ON DELETE CASCADE
 )''')
 
-# Composite index for tradeable_asset_prices
-c.execute('''CREATE INDEX IF NOT EXISTS idx_tradeable_asset_prices_datetime_token ON tradeable_asset_prices(datetime, token_address);''')
+# Composite index for tradeable_asset_prices_indicators
+c.execute('''CREATE INDEX IF NOT EXISTS idx_tradeable_asset_prices_indicators_unixtime_token ON tradeable_asset_prices_indicators(unixtime, token_address);''')
 
 # Create table for algorithmic trades
 c.execute('''CREATE TABLE IF NOT EXISTS algorithmic_trades (

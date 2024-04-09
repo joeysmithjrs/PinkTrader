@@ -4,11 +4,9 @@
     "check_exit_rule_minutes": 5,
     "minimum_periods": 20,
     "base_token_address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-    "parameters": {
-        "5m_slow_ema_period": 10,
-        "5m_fast_ema_period": 5,
-        "15m_slow_ema_period": 10,
-        "15m_fast_ema_period": 5
+    "indicators": {
+        "15m" : {"EMA": [[7]], "ATR" : [[10]]},
+        "5m" : {"EMA" : [[7], [14]], "BOLLINGER" : [[10, 2.5]]}
     },
     "risk_management": {
         "portfolio_allocation_pct": 1,

@@ -58,9 +58,9 @@ class Universe:
             await self.session.close()
 
     @handle_sqlite_lock()
-    async def init_df_column(self):
-        await self.open_database_connection()
+    async def init_db_column(self):
         try:
+            await self.open_database_connection()
             await self.cur.execute(f"PRAGMA table_info(tradeable_assets)")
             columns = [info[1] for info in await self.cur.fetchall()]
             if self.universe_id not in columns:
@@ -105,7 +105,7 @@ class Universe:
         return await self.cur.fetchone()
     
     async def last_ohclv_update_unixtime(self, token_address, interval):
-        await self.cur.execute('''SELECT unixtime FROM tradeable_asset_prices WHERE token_address = ? AND interval = ? ORDER BY unixtime DESC LIMIT 1''', (token_address, interval))
+        await self.cur.execute('''SELECT unixtime FROM tradeable_asset_prices_indicators WHERE token_address = ? AND interval = ? ORDER BY unixtime DESC LIMIT 1''', (token_address, interval))
         return await self.cur.fetchone()
     
     async def get_token_creation_unixtime(self, token_address):
@@ -131,12 +131,12 @@ class Universe:
         log_general.info(f"token_address: {entry.get('token_address')} added to tradeable_assets and set true for universe_id: {self.universe_id}")
 
     @handle_sqlite_lock()
-    async def insert_into_tradeable_asset_prices(self, token_address, entries, interval):
+    async def insert_into_tradeable_asset_prices_indicators(self, token_address, entries, interval):
         for data_point in entries:
-            await self.cur.execute('''INSERT INTO tradeable_asset_prices (token_address, unixtime, open, high, low, close, volume, interval)
+            await self.cur.execute('''INSERT INTO tradeable_asset_prices_indicators (token_address, unixtime, open, high, low, close, volume, interval)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', (token_address, data_point["unixTime"],data_point["o"], data_point["h"], data_point["l"], data_point["c"], data_point["v"], interval))
         await self.conn.commit()
-        log_general.info(f"{len(entries)} OHCLV data points added to tradeable_asset_prices for token_address: {token_address} interval: {interval}")
+        log_general.info(f"{len(entries)} OHCLV data points added to tradeable_asset_prices_indicators for token_address: {token_address} interval: {interval}")
 
     async def fill_entry(self, coin):
         volume = convert_or_default(coin.get('v24hUSD'), float, 0)
@@ -243,7 +243,6 @@ class Universe:
         log_general.info(f"{total_filtered_out_percentage}% of initial universe further filtered out by volume and liquidity for universe_id: {self.universe_id}")
         return filtered_universe
 
-    
     async def update_tradeable_assets(self):
         try:
             await self.open_database_connection()
@@ -264,31 +263,30 @@ class Universe:
         finally:
             self.close_database_connection()
 
-    async def update_tradeable_asset_prices(self):
+    async def update_tradeable_asset_prices_indicators(self, interval):
         try:
             await self.open_database_connection()
             await self.open_aiohttp_session()
             token_addresses = await self.get_all_currently_tradeable_assets()
 
             for token_address in token_addresses:
-                for interval in self.intervals:
-                    unix_time_end = int(time.time())
-                    result = await self.last_ohclv_update_unixtime(self, token_address, interval)
-                    if result:
-                        last_update_unix = result[0]
+                unix_time_end = int(time.time())
+                result = await self.last_ohclv_update_unixtime(self, token_address, interval)
+                if result:
+                    last_update_unix = result[0]
+                else:
+                    creation_unixtime_result = await self.get_token_creation_unixtime(token_address)
+                    creation_unixtime = creation_unixtime_result[0] if creation_unixtime_result else unix_time_end
+                    if unix_time_end - creation_unixtime < interval_to_seconds('1W'):
+                        last_update_unix = creation_unixtime
                     else:
-                        creation_unixtime_result = await self.get_token_creation_unixtime(token_address)
-                        creation_unixtime = creation_unixtime_result[0] if creation_unixtime_result else unix_time_end
-                        if unix_time_end - creation_unixtime < interval_to_seconds('1W'):
-                            last_update_unix = creation_unixtime
-                        else:
-                            last_update_unix = unix_time_end - interval_to_seconds('1W')
+                        last_update_unix = unix_time_end - interval_to_seconds('1W')
 
-                    interval_seconds = interval_to_seconds(interval)
-                    if unix_time_end - last_update_unix >= interval_seconds:
-                        new_ohlcv_data = await self.fetch_new_ohlcv_data(token_address, interval, last_update_unix, unix_time_end)["data"]["items"]
-                        if new_ohlcv_data:
-                            await self.insert_into_tradeable_asset_prices(token_address, new_ohlcv_data, interval)
+                interval_seconds = interval_to_seconds(interval)
+                if unix_time_end - last_update_unix >= interval_seconds:
+                    new_ohlcv_data = await self.fetch_new_ohlcv_data(token_address, interval, last_update_unix, unix_time_end)["data"]["items"]
+                    if new_ohlcv_data:
+                        await self.insert_into_tradeable_asset_prices_indicators(token_address, new_ohlcv_data, interval)
         finally:
             self.close_aiohttp_session()
             self.close_database_connection()
