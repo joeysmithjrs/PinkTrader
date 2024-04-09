@@ -13,8 +13,8 @@ class Universe:
         self.path = universe_configs_path
         with open(self.path, 'r') as file:
             self.configs = json.load(file)
-        self.universe_id = self.configs.get('universe_id')
-        self.platform = self.configs.get('platform')
+        self.universe_id = self.configs['universe_id']
+        self.platform = self.configs['platform']
         self.token_list_sort_by = self.configs.get('token_list_sort_by')
         self.token_list_sort_type = self.configs.get('token_list_sort_type')
         self.page_limit = self.configs.get('token_list_page_limit')
@@ -58,15 +58,12 @@ class Universe:
             await self.session.close()
 
     @handle_sqlite_lock()
+    @handle_database_connection()
     async def init_db_column(self):
-        try:
-            await self.open_database_connection()
-            await self.cur.execute(f"PRAGMA table_info(tradeable_assets)")
-            columns = [info[1] for info in await self.cur.fetchall()]
-            if self.universe_id not in columns:
-                await self.cur.execute(f"ALTER TABLE tradeable_assets ADD COLUMN {self.universe_id} BOOLEAN DEFAULT FALSE")
-        finally:
-            await self.close_database_connection()
+        await self.cur.execute(f"PRAGMA table_info(tradeable_assets)")
+        columns = [info[1] for info in await self.cur.fetchall()]
+        if self.universe_id not in columns:
+            await self.cur.execute(f"ALTER TABLE tradeable_assets ADD COLUMN {self.universe_id} BOOLEAN DEFAULT FALSE")
             
     @handle_sqlite_lock()
     async def set_currently_tradeable_to_false(self):
@@ -164,32 +161,28 @@ class Universe:
 
         return entry, preliminaries
 
+    @handle_database_connection()
+    @handle_aiohttp_session()
     async def fetch_coins_by_market_cap(self):
-        try:
-            await self.open_database_connection()
-            await self.open_aiohttp_session()
-            universe = {n: [] for n in range(1, len(self.market_cap_bins) + 1)}
-            min_mc, max_mc = self.market_cap_bins[0][0], self.market_cap_bins[-1][1]
-            offset = 0
-            while offset <= self.api_token_fetch_limit:
-                coins = await self.fetch_token_list_page(offset)
-                if not coins:
-                    break
-                for coin in coins['data']['tokens']:
-                    entry, preliminaries = await self.fill_entry(coin)
-                    market_cap = entry.get('market_cap')
-                    if await self.token_exists_in_database(entry.get('token_address')):
-                        await self.insert_into_tradeable_assets_info(entry)
-                    if (min_mc < market_cap <= max_mc) and preliminaries:
-                        for idx, (lower_bound, upper_bound) in enumerate(self.market_cap_bins, start=1):
-                            if lower_bound <= market_cap < upper_bound:
-                                universe[idx].append(entry)
-                                break
-                offset += 50
-            log_general.info(f"Queried {self.api_token_fetch_limit + 50} tokens from birdeye with sort_by: {self.token_list_sort_by} and sort_type: {self.token_list_sort_type} for universe_id: {self.universe_id}")
-        finally:
-            await self.close_aiohttp_session()
-            await self.close_database_connection()
+        universe = {n: [] for n in range(1, len(self.market_cap_bins) + 1)}
+        min_mc, max_mc = self.market_cap_bins[0][0], self.market_cap_bins[-1][1]
+        offset = 0
+        while offset <= self.api_token_fetch_limit:
+            coins = await self.fetch_token_list_page(offset)
+            if not coins:
+                break
+            for coin in coins['data']['tokens']:
+                entry, preliminaries = await self.fill_entry(coin)
+                market_cap = entry.get('market_cap')
+                if await self.token_exists_in_database(entry.get('token_address')):
+                    await self.insert_into_tradeable_assets_info(entry)
+                if (min_mc < market_cap <= max_mc) and preliminaries:
+                    for idx, (lower_bound, upper_bound) in enumerate(self.market_cap_bins, start=1):
+                        if lower_bound <= market_cap < upper_bound:
+                            universe[idx].append(entry)
+                            break
+            offset += 50
+        log_general.info(f"Queried {self.api_token_fetch_limit + 50} tokens from birdeye with sort_by: {self.token_list_sort_by} and sort_type: {self.token_list_sort_type} for universe_id: {self.universe_id}")
         return universe
 
     def filter_universe_by_age_and_security(self, universe):
@@ -243,50 +236,43 @@ class Universe:
         log_general.info(f"{total_filtered_out_percentage}% of initial universe further filtered out by volume and liquidity for universe_id: {self.universe_id}")
         return filtered_universe
 
+    @handle_database_connection()
     async def update_tradeable_assets(self):
-        try:
-            await self.open_database_connection()
-            log_general.info(f"Beginning universe selection process for universe_id: {self.universe_id}")
-            universe = await self.fetch_coins_by_market_cap()
-            security_filtered_universe = self.filter_universe_by_age_and_security(universe)
-            final_filtered_universe = self.filter_universe_by_volume_and_liquidity(security_filtered_universe)
-            log_general.info(format_universe_composition(self.market_cap_bins, final_filtered_universe))
-            await self.set_currently_tradeable_to_false()
+        log_general.info(f"Beginning universe selection process for universe_id: {self.universe_id}")
+        universe = await self.fetch_coins_by_market_cap()
+        security_filtered_universe = self.filter_universe_by_age_and_security(universe)
+        final_filtered_universe = self.filter_universe_by_volume_and_liquidity(security_filtered_universe)
+        log_general.info(format_universe_composition(self.market_cap_bins, final_filtered_universe))
+        await self.set_currently_tradeable_to_false()
 
-            for asset in final_filtered_universe:
-                token_address = asset['token_address']
-                if await self.token_exists_in_database(token_address):
-                    await self.set_currently_tradeable_to_true(token_address)
-                else:
-                    await self.insert_into_tradaeble_assets(asset)
-                    await self.insert_into_tradeable_assets_info(asset)
-        finally:
-            self.close_database_connection()
+        for asset in final_filtered_universe:
+            token_address = asset['token_address']
+            if await self.token_exists_in_database(token_address):
+                await self.set_currently_tradeable_to_true(token_address)
+            else:
+                await self.insert_into_tradaeble_assets(asset)
+                await self.insert_into_tradeable_assets_info(asset)
 
+    @handle_database_connection()
+    @handle_aiohttp_session()
     async def update_tradeable_asset_prices_indicators(self, interval):
-        try:
-            await self.open_database_connection()
-            await self.open_aiohttp_session()
-            token_addresses = await self.get_all_currently_tradeable_assets()
+        token_addresses = await self.get_all_currently_tradeable_assets()
 
-            for token_address in token_addresses:
-                unix_time_end = int(time.time())
-                result = await self.last_ohclv_update_unixtime(self, token_address, interval)
-                if result:
-                    last_update_unix = result[0]
+        for token_address in token_addresses:
+            unix_time_end = int(time.time())
+            result = await self.last_ohclv_update_unixtime(self, token_address, interval)
+            if result:
+                last_update_unix = result[0]
+            else:
+                creation_unixtime_result = await self.get_token_creation_unixtime(token_address)
+                creation_unixtime = creation_unixtime_result[0] if creation_unixtime_result else unix_time_end
+                if unix_time_end - creation_unixtime < interval_to_seconds('1W'):
+                    last_update_unix = creation_unixtime
                 else:
-                    creation_unixtime_result = await self.get_token_creation_unixtime(token_address)
-                    creation_unixtime = creation_unixtime_result[0] if creation_unixtime_result else unix_time_end
-                    if unix_time_end - creation_unixtime < interval_to_seconds('1W'):
-                        last_update_unix = creation_unixtime
-                    else:
-                        last_update_unix = unix_time_end - interval_to_seconds('1W')
+                    last_update_unix = unix_time_end - interval_to_seconds('1W')
 
-                interval_seconds = interval_to_seconds(interval)
-                if unix_time_end - last_update_unix >= interval_seconds:
-                    new_ohlcv_data = await self.fetch_new_ohlcv_data(token_address, interval, last_update_unix, unix_time_end)["data"]["items"]
-                    if new_ohlcv_data:
-                        await self.insert_into_tradeable_asset_prices_indicators(token_address, new_ohlcv_data, interval)
-        finally:
-            self.close_aiohttp_session()
-            self.close_database_connection()
+            interval_seconds = interval_to_seconds(interval)
+            if unix_time_end - last_update_unix >= interval_seconds:
+                new_ohlcv_data = await self.fetch_new_ohlcv_data(token_address, interval, last_update_unix, unix_time_end)["data"]["items"]
+                if new_ohlcv_data:
+                    await self.insert_into_tradeable_asset_prices_indicators(token_address, new_ohlcv_data, interval)

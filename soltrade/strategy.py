@@ -2,7 +2,7 @@ import asyncio
 import aiosqlite
 import json
 from log import log_general, log_transaction
-from utils import handle_sqlite_lock
+from utils import handle_sqlite_lock, handle_database_connection
 from wallet import find_balance
 from config import config
 from transactions import perform_swap
@@ -20,50 +20,16 @@ class Strategy:
         self.token_list = self.current_holdings = self.conn = self.cur = self.indicators, self.indicator_cols = None
         await self.init_indicators()
 
-    async def init_indicators(self):
-        interval_indicators, indicator_cols = {}, []
-        for interval, indicators in self.indicator_dict.items():
-            indicator_instances = []
-            for name, args_list in indicators.items():
-                for args in args_list:
-                    indi = init_indicator(name, *args)
-                    indicator_cols.extend(indi.cols)
-                    indicator_instances.append(indi)
-            interval_indicators[interval] = indicator_instances
-        self.indicators = interval_indicators
-        indicator_cols = list(set(indicator_cols))
-        await self.init_db_columns(indicator_cols)
-
-    @handle_sqlite_lock()
-    async def init_db_columns(self, names):
-        try:
-            self.open_database_connection()
-            for name in names:
-                await self.cur.execute(f"PRAGMA table_info(tradable_asset_prices_indicators)")
-                columns = [info[1] for info in await self.cur.fetchall()]
-                if name not in columns:
-                    await self.cur.execute(f"ALTER TABLE tradable_asset_prices_indicators ADD COLUMN {name} REAL")
-                    log_general.info(f"Column name: {name} added to tradable_asset_prices_indicators")
-        finally:
-            self.close_database_connection()
-
+    @handle_database_connection()
     async def pre_next(self):
-        try:
-            await self.open_database_connection()
-            self.update_indicators()
-            self.token_list = await self.query_tradeable_assets()
-            self.current_holdings = await self.query_portfolio_tokens()
-            self.update_buy_size_limit()
+        self.update_indicators()
+        self.token_list = await self.query_tradeable_assets()
+        self.current_holdings = await self.query_portfolio_tokens()
+        self.update_buy_size_limit()
 
-        finally: 
-            await self.close_database_connection()
-    
+    @handle_database_connection()
     async def post_next(self):
-        try:
-            self.open_database_connection()
-            self.insert_into_indicator_database()
-        finally:
-            self.close_database_connection()
+        self.insert_into_indicator_database()
 
     async def update_indicators(self):
         for token in self.token_list:
@@ -110,6 +76,30 @@ class Strategy:
         await self.conn.close()
         log_general.info("SQLite Database connection closed")
 
+    async def init_indicators(self):
+        interval_indicators, indicator_cols = {}, []
+        for interval, indicators in self.indicator_dict.items():
+            indicator_instances = []
+            for name, args_list in indicators.items():
+                for args in args_list:
+                    indi = init_indicator(name, *args)
+                    indicator_cols.extend(indi.cols)
+                    indicator_instances.append(indi)
+            interval_indicators[interval] = indicator_instances
+        self.indicators = interval_indicators
+        indicator_cols = list(set(indicator_cols))
+        await self.init_db_columns(indicator_cols)
+
+    @handle_sqlite_lock()
+    @handle_database_connection()
+    async def init_db_columns(self, names):
+        await self.cur.execute(f"PRAGMA table_info(tradable_asset_prices_indicators)")
+        columns = [info[1] for info in await self.cur.fetchall()]
+        for name in names:
+            if name not in columns:
+                await self.cur.execute(f"ALTER TABLE tradable_asset_prices_indicators ADD COLUMN {name} REAL")
+                log_general.info(f"Column name: {name} added to tradable_asset_prices_indicators")
+
     async def get_prices_for_all_current_holdings(self):
         # fetch multiprice from jupiter
         pass
@@ -153,17 +143,15 @@ class Strategy:
         tokens = [row[0] for row in rows]
         return tokens
 
+    @handle_database_connection()
     async def fetch_ohlcv_data(self, token_address, interval):
-        await self.open_database_connection()
         data = []
         await self.cur.execute("SELECT unixtime, open, high, low, close, volume FROM tradable_asset_prices_indicators WHERE token_address=? AND interval=? ORDER BY datetime DESC LIMIT ?", (token_address, interval, self.minimum_periods))
         data = await self.cur.fetchall()
-        await self.close_database_connection()
         return data
 
+    @handle_database_connection()
     async def get_balance(self, token_address):
-        await self.open_database_connection()
         await self.cur.execute("SELECT token_balance FROM portfolio_composition_by_strategy WHERE token_address=? AND strategyID=?", (token_address, self.strategyID))
         balance = await self.cur.fetchone()
-        await self.close_database_connection()
         return balance[0] if balance else 0
