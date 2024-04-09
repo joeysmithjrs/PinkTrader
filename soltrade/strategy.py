@@ -1,6 +1,6 @@
 import asyncio
 import aiosqlite
-import json
+import pandas as pd
 from log import log_general, log_transaction
 from utils import handle_sqlite_lock, handle_database_connection
 from wallet import find_balance
@@ -10,14 +10,14 @@ from indicators import init_indicator
 
 class Strategy:
     async def __init__(self, configs):
+        self.simulation_or_backtest = config().simulation or config().backtest
         self.strategy_id = configs['strategy_id']
         self.universe_id = configs['universe_id']
         self.check_exit_rule_minutes = configs.get('check_exit_rule_minutes')
-        self.minimum_periods = self.configs.get('minimum_periods')
         self.base_token_address = self.configs.get('base_token_address')
         self.risk_management = self.configs.get('risk_management')
         self.indicator_dict = self.configs.get('indicators')
-        self.token_list = self.current_holdings = self.conn = self.cur = self.indicators, self.indicator_cols = None
+        self.token_list = self.current_holdings = self.conn = self.cur = self.indicators, self.indicator_cols, self.indicator_values, self.max_samples = None
         await self.init_indicators()
 
     @handle_database_connection()
@@ -32,29 +32,22 @@ class Strategy:
         self.insert_into_indicator_database()
 
     async def update_indicators(self):
+        self.indicator_values = { token: { interval: { indi.__class__.__name__: None for indi in self.indicators[interval] } for interval in self.indicators } for token in self.token_list }
+        new_indicator_database_entries = pd.DataFrame(columns=['unixtime', 'token_address', 'interval'].extend(self.indicator_cols))
         for token in self.token_list:
-            if token not in self.indicator_values:
-                self.indicator_values[token] = {}
-            
-            for indicator_name, settings in self.indicator_dict.items():
-                if indicator_name not in self.indicator_values[token]:
-                    self.indicator_values[token][indicator_name] = {}
-                
-                for setting in settings:
-                    interval, *args = setting  # First item is interval, the rest are args
-                    
-                    if interval not in self.indicator_values[token][indicator_name]:
-                        self.indicator_values[token][indicator_name][interval] = []
-                    
-                    historical_values = self.indicator_values[token][indicator_name][interval]
-                    
-                    # Calculate the new indicator value
-                    new_value = await indicator_map[indicator_name](token, interval, self.db_connection, *args, historical_values=historical_values)
-                    
-                    # Append the new value, maintaining the list's length up to self.minimum_periods
-                    historical_values.append(new_value)
-                    if len(historical_values) > self.minimum_periods:
-                        historical_values.pop(0)
+            for interval, indis in self.indicators.items():
+                data = self.fetch_joined_ohlcv_and_indicators_data(token, interval, self.max_samples)
+                for indi in indis:
+                    fetched_indi_cols = data[list(indi.cols)]
+                    if fetched_indi_cols.notna().all():
+                        self.indicator_values[token][interval][indi.__class__.__name__] = fetched_indi_cols
+                        break
+                    columns = ['unixtime', 'open', 'high', 'low', 'close', 'volume'] + list(indi.cols)
+                    new_calcs = indi.calculate(data[columns])
+                    diff_mask = (fetched_indi_cols != new_calcs)
+                    rows_with_diff, cols_with_diff = diff_mask.any(axis=1), diff_mask.any(axis=0)
+                    df_diff_rows = new_calcs[rows_with_diff]
+                    df_final_diff = df_diff_rows.loc[:, cols_with_diff]
 
     async def insert_into_indicator_database():
         pass
@@ -78,27 +71,30 @@ class Strategy:
 
     async def init_indicators(self):
         interval_indicators, indicator_cols = {}, []
+        samples = 0
         for interval, indicators in self.indicator_dict.items():
             indicator_instances = []
             for name, args_list in indicators.items():
                 for args in args_list:
                     indi = init_indicator(name, *args)
+                    samples = max(samples, indi.length)
                     indicator_cols.extend(indi.cols)
                     indicator_instances.append(indi)
             interval_indicators[interval] = indicator_instances
         self.indicators = interval_indicators
+        self.max_samples = samples
         indicator_cols = list(set(indicator_cols))
         await self.init_db_columns(indicator_cols)
 
     @handle_sqlite_lock()
     @handle_database_connection()
     async def init_db_columns(self, names):
-        await self.cur.execute(f"PRAGMA table_info(tradable_asset_prices_indicators)")
+        await self.cur.execute(f"PRAGMA table_info(tradable_asset_indicators)")
         columns = [info[1] for info in await self.cur.fetchall()]
         for name in names:
             if name not in columns:
-                await self.cur.execute(f"ALTER TABLE tradable_asset_prices_indicators ADD COLUMN {name} REAL")
-                log_general.info(f"Column name: {name} added to tradable_asset_prices_indicators")
+                await self.cur.execute(f"ALTER TABLE tradable_asset_indicators ADD COLUMN {name} REAL")
+                log_general.info(f"Column name: {name} added to tradable_asset_indicators")
 
     async def get_prices_for_all_current_holdings(self):
         # fetch multiprice from jupiter
@@ -144,11 +140,55 @@ class Strategy:
         return tokens
 
     @handle_database_connection()
-    async def fetch_ohlcv_data(self, token_address, interval):
-        data = []
-        await self.cur.execute("SELECT unixtime, open, high, low, close, volume FROM tradable_asset_prices_indicators WHERE token_address=? AND interval=? ORDER BY datetime DESC LIMIT ?", (token_address, interval, self.minimum_periods))
+    async def fetch_last_ohlcv_data(self, token_address, interval, length):
+        columns = ['unixtime', 'open', 'high', 'low', 'close', 'volume']
+        query = f"""SELECT {','.join(columns)} 
+                    FROM tradable_asset_prices 
+                    WHERE token_address = ? 
+                    AND interval = ? 
+                    ORDER BY datetime 
+                    DESC LIMIT ?"""
+        await self.cur.execute(query, (token_address, interval, length))
         data = await self.cur.fetchall()
-        return data
+        return pd.DataFrame(data, columns=columns)
+    
+    @handle_database_connection()
+    async def fetch_ohlcv_data_range(self, token_address, interval, unixtimestart, unixtimeend):
+        columns = ['unixtime', 'open', 'high', 'low', 'close', 'volume']
+        query = f"SELECT {','.join(columns)} FROM tradable_asset_prices FROM tradable_asset_prices WHERE token_address = ? AND interval = ? AND unixtime >= ? AND unixtime <= ? ORDER BY unixtime DESC"
+        await self.cur.execute(query, (token_address, interval, unixtimestart, unixtimeend))
+        data = await self.cur.fetchall()
+        return pd.DataFrame(data, columns=columns)
+    
+    @handle_database_connection()
+    async def fetch_indicators_data_range(self, token_address, interval, unixtimestart, unixtimeend):
+        columns = ', '.join(['unixtime'] + self.indicator_cols)
+        query = f"SELECT {columns} FROM tradable_asset_indicators  # Assuming this is the correct table name WHERE token_address = ? AND interval = ? AND unixtime >= ? AND unixtime <= ? ORDER BY unixtime DESC"
+        await self.cur.execute(query, (token_address, interval, unixtimestart, unixtimeend))
+        data = await self.cur.fetchall()
+        return pd.DataFrame(data, columns=columns)
+
+    @handle_database_connection()
+    async def fetch_joined_ohlcv_and_indicators_data(self, token_address, interval, length, unixtimestart, unixtimeend):
+        ohlcv_columns = ['unixtime', 'open', 'high', 'low', 'close', 'volume']
+        indicator_columns = [f'a.{col}' for col in self.indicator_cols]
+        subquery_ohlcv = f"""SELECT {', '.join(ohlcv_columns)}
+                             FROM tradable_asset_prices
+                             WHERE token_address = ? AND interval = ?
+                             ORDER BY datetime 
+                             DESC LIMIT ? """
+        main_query = f"""WITH last_ohlcv AS ({subquery_ohlcv})
+                         SELECT last_ohlcv.*, {', '.join(indicator_columns)}
+                         FROM last_ohlcv
+                         LEFT JOIN tradable_asset_indicators a ON last_ohlcv.unixtime = a.unixtime
+                         AND last_ohlcv.token_address = a.token_address
+                         AND last_ohlcv.interval = a.interval
+                         ORDER BY last_ohlcv.unixtime DESC
+                         """
+        await self.cur.execute(main_query, (token_address, interval, length))
+        data = await self.cur.fetchall()
+        columns = ohlcv_columns + self.indicator_cols
+        return pd.DataFrame(data, columns=columns)
 
     @handle_database_connection()
     async def get_balance(self, token_address):

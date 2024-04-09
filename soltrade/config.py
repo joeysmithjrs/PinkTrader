@@ -20,6 +20,8 @@ class Config:
         self.trading_interval_minutes = None
         self.slippage = None  # BPS
         self.computeUnitPriceMicroLamports = None
+        self.simulation = False
+        self.backtest = False
         self.load_config()
 
     def load_config(self):

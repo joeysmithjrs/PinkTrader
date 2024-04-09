@@ -2,7 +2,6 @@
     "strategy_id": "EMACrossoverStrategy1",
     "universe_id": "1m_250m_universe_1",
     "check_exit_rule_minutes": 5,
-    "minimum_periods": 20,
     "base_token_address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     "indicators": {
         "15m" : {"EMA": [[7]], "ATR" : [[10]]},

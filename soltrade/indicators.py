@@ -2,10 +2,11 @@ import pandas as pd
 
 class SignalFactory:
     def __init__(self, indicator_dict):
+        self.indicators = indicator_dict
+
+    def next(self, df):
         pass
 
-    def next():
-        pass
 
 class Indicator:
     input_arguments = None 
@@ -15,6 +16,7 @@ class Indicator:
         if self.input_arguments is not None and len(args) != self.input_arguments:
             raise ValueError(f"{self.__class__.__name__} expects exactly {self.input_arguments} argument(s), got {len(args)}")
         self.args = args
+        self.length = args[0]
         self.output_datapoints = getattr(self, 'output_datapoints', 1)  # Default to 1 if not specified
         self.cols = self.column_names()
 
@@ -34,7 +36,6 @@ class EMA(Indicator):
 
     def __init__(self, *args):
         super().__init__(*args)
-        self.length = self.args[0]  # The length parameter
     
     def calculate(self, df):
         # Placeholder for the EMA calculation logic
@@ -46,7 +47,6 @@ class ATR(Indicator):
 
     def __init__(self, *args):
         super().__init__(*args)
-        self.length = self.args[0]  # The length parameter
     
     def calculate(self, df):
         # Placeholder for the ATR calculation logic
@@ -58,7 +58,6 @@ class BOLLINGER(Indicator):
 
     def __init__(self, *args):
         super().__init__(*args)
-        self.length = self.args[0]  # The length parameter
         self.std_devs = self.args[1]  # The standard deviations parameter
     
     def calculate(self, df):
