@@ -2,10 +2,11 @@
     "strategy_id": "EMACrossoverStrategy1",
     "universe_id": "1m_250m_universe_1",
     "check_exit_rule_minutes": 5,
+    "lookback_period": {"5m": 30, "15m": 30},
     "base_token_address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     "indicators": {
-        "15m" : {"EMA": [[7]], "ATR" : [[10]]},
-        "5m" : {"EMA" : [[7], [14]], "BOLLINGER" : [[10, 2.5]]}
+        "5m" : {"EMA" : [[7], [14]], "BOLLINGER" : [[10, 2.5]]},
+        "15m" : {"EMA": [[7]], "ATR" : [[10]]}
     },
     "risk_management": {
         "portfolio_allocation_pct": 1,
