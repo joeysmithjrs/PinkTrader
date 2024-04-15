@@ -3,15 +3,14 @@ import aiosqlite
 import pandas as pd
 from log import log_general, log_transaction
 from utils import handle_sqlite_lock, handle_database_connection
+from datastructures import StreamContainer
 from wallet import find_balance
 from config import config
 from transactions import perform_swap
 from indicators import init_indicator
+from abc import ABC, abstractmethod
 
-class OHCLV:
-    pass
-
-class Strategy:
+class Strategy(ABC):
     def __init__(self, configs):
         self.strategy_id = configs.get('strategy_id')
         self.universe_id = configs.get('universe_id')
@@ -22,6 +21,7 @@ class Strategy:
         self.indicator_dict = configs.get('indicators', None)
 
         self.simulation_or_backtest = None
+        self.new_indicator_database_entries = None
         self.token_list = None
         self.current_holdings = None
         self.conn = None
@@ -40,6 +40,27 @@ class Strategy:
         assert instance.universe_id is not None and isinstance(instance.universe_id, str), "universe_id must be a non-empty string"
         await instance.init_indicators()
         return instance
+    
+    async def run(self):
+        await self.pre_next()
+        await self.next()
+        await self.post_next()
+    
+    @handle_database_connection()
+    async def pre_next(self):
+        self.token_list = await self.query_tradeable_assets()
+        self.current_holdings = await self.query_portfolio_tokens()
+        self.update_ohclv_and_indicators()
+        self.update_buy_size_limit()
+
+    @abstractmethod
+    async def next(self):
+        """ Implement the next logic for the strategy in subclasses """
+        pass
+
+    @handle_database_connection()
+    async def post_next(self):
+        await self.insert_into_indicator_database()
 
     async def init_indicators(self):
         interval_indicators, indicator_cols = {}, []
@@ -66,49 +87,51 @@ class Strategy:
                 await self.cur.execute(f"ALTER TABLE tradable_asset_indicators ADD COLUMN {name} REAL")
                 log_general.info(f"Column name: {name} added to tradable_asset_indicators")
 
-    @handle_database_connection()
-    async def pre_next(self):
-        self.token_list = await self.query_tradeable_assets()
-        self.current_holdings = await self.query_portfolio_tokens()
-        self.update_ohclv_and_indicators()
-        self.update_buy_size_limit()
-
-    @handle_database_connection()
-    async def post_next(self):
-        self.insert_into_indicator_database()
-
     async def update_ohclv_and_indicators(self):
-        self.indis = { token: { interval: { indi.id: None for indi in self.indicators[interval] } for interval in self.indicators } for token in self.token_list }
-        new_indicator_database_entries = { interval: { indi.id: pd.DataFrame(columns=['unixtime', 'token_address', 'interval'].extend(indi.cols)) for indi in self.indicators[interval] } for interval in self.indicators } 
+        self.indis = {
+            token: {interval: {indi.id: None for indi in self.indicators[interval]} for interval in self.indicators} 
+            for token in self.token_list 
+        }
+        self.new_indicator_database_entries = {
+            interval: pd.DataFrame(columns=['unixtime', 'token_address', 'interval'] + [col for indi in self.indicators[interval] for col in indi.cols])
+            for interval in self.indicators 
+        }
+
         for token in self.token_list:
             for interval, indis in self.indicators.items():
-                data = self.fetch_joined_ohlcv_and_indicators_data(token, interval, self.lookback_period[interval])
-                columns = ['open', 'high', 'low', 'close', 'volume'] 
-                self.ohclv[token][interval] = data[columns]
+                data = await self.fetch_joined_ohlcv_and_indicators_data(token, interval, self.lookback_period[interval])
+                columns = ['open', 'high', 'low', 'close', 'volume']
+                data_stream = StreamContainer(data[columns])
+                self.ohclv[token][interval] = data_stream
+                
+                interval_data = []
+
                 for indi in indis:
                     fetched_indi_cols = data[list(indi.cols)]
-                    if fetched_indi_cols.notna().all():
-                        self.indis[token][interval][indi.id] = fetched_indi_cols
-                        break
-                    new_calcs = indi.calculate(data[columns + list(indi.cols)])
-                    diff_mask = (fetched_indi_cols != new_calcs)
-                    rows_with_diff = diff_mask.any(axis=1)
-                    df_diff_rows = new_calcs.loc[rows_with_diff]
-                    df_final_diff = df_diff_rows.loc[:, indi.cols + ['unixtime']]
-                    df_final_diff['token_address'] = token
-                    df_final_diff['interval'] = interval
-                    new_indicator_database_entries[interval][indi.id] = pd.concat([new_indicator_database_entries[interval][indi.id], df_final_diff], ignore_index=True)
-                    self.indis[token][interval][indi.id] = new_calcs[['unixtime'] + list(indi.cols)]
+                    indi_stream = StreamContainer(fetched_indi_cols, indi.stream_aliases)
+                    full_calcs, new_idxs = indi.next(data_stream, indi_stream)
+                    
+                    start_idx, end_idx = new_idxs
+                    new_entries_data = {
+                        indi.alias_to_cols[alias]: stream.data[start_idx:end_idx+1]
+                        for alias, stream in full_calcs.streams.items()
+                    }
+                    
+                    new_entries_df = pd.DataFrame(new_entries_data, index=full_calcs.index[start_idx:end_idx+1])
+                    new_entries_df['unixtime'] = new_entries_df.index
+                    new_entries_df['token_address'] = token
+                    new_entries_df['interval'] = interval
+                    
+                    interval_data.append(new_entries_df)
 
-    async def insert_into_indicator_database():
-        pass
+                    self.indis[token][interval][indi.id] = full_calcs
 
-    async def next(self):
-        raise NotImplementedError("Subclasses should implement this method")
-
-    async def run(self):
-        await self.pre_next()
-        await self.next()
+                if interval_data:
+                    combined_interval_data = pd.concat(interval_data, axis=1)
+                    combined_interval_data = combined_interval_data.loc[:,~combined_interval_data.columns.duplicated()]
+                    self.new_indicator_database_entries[interval] = pd.concat(
+                        [self.new_indicator_database_entries[interval], combined_interval_data], ignore_index=True
+                    )
 
     async def open_database_connection(self):
         self.conn = await aiosqlite.connect(config().database_path)
@@ -221,3 +244,14 @@ class Strategy:
         await self.cur.execute("SELECT token_balance FROM portfolio_composition_by_strategy WHERE token_address=? AND strategyID=?", (token_address, self.strategyID))
         balance = await self.cur.fetchone()
         return balance[0] if balance else 0
+    
+    @handle_database_connection()
+    @handle_sqlite_lock()
+    async def insert_into_indicator_database(self):
+        for interval, df in self.new_indicator_database_entries.items():
+            if not df.empty:
+                columns = ', '.join(df.columns)
+                placeholders = ', '.join(['?' for _ in df.columns])
+                sql = f"INSERT INTO tradeable_asset_indicators ({columns}) VALUES ({placeholders})"
+                data_tuples = [tuple(row) for row in df.itertuples(index=False, name=None)]
+                await self.cur.executemany(sql, data_tuples)
