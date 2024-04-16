@@ -75,19 +75,19 @@ class Universe:
         await self.cur.execute(f"UPDATE tradeable_assets SET {self.universe_id} = TRUE WHERE token_address = {token_address}")
         await self.conn.commit()
 
-    @handle_rate_limiting_birdeye()
+    @handle_rate_limiting_aiohttp()
     async def fetch_token_security_info(self, token_address):
         url = f"https://public-api.birdeye.so/defi/token_security?address={token_address}"
         async with self.session.get(url, headers=self.headers) as response:
             return response
     
-    @handle_rate_limiting_birdeye()
+    @handle_rate_limiting_aiohttp()
     async def fetch_token_list_page(self, offset):
         url = f"https://public-api.birdeye.so/public/tokenlist?sort_by={self.token_list_sort_by}&sort_type={self.token_list_sort_type}&offset={offset}&limit={self.page_limit}"
         async with self.session.get(url, headers=self.headers) as response:
             return response
     
-    @handle_rate_limiting_birdeye()
+    @handle_rate_limiting_aiohttp()
     async def fetch_new_ohlcv_data(self, token_address, interval, unix_time_start, unix_time_end):
         url = f"https://public-api.birdeye.so/defi/ohlcv?address={token_address}&type={interval}&time_from={unix_time_start}&time_to={unix_time_end}"
         async with self.session.get(url, headers=self.headers) as response:

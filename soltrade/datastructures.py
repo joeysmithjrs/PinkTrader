@@ -18,18 +18,39 @@ class Stream:
         else:
             raise ValueError("Input must be a pandas Series")
         
-    def std_dev(self, length=1, lag=0):
+    def mean(self, length=1, lag=0) -> float:
         if lag + length > len(self.data):
-            return None  # Not enough data
+            length = len(self.data) - lag 
+        segment = self.data[-1 - lag - length: -1 - lag if lag > 0 else None]
+        return np.mean(segment)
+    
+    def max(self, length=1, lag=0) -> float:
+        if lag + length > len(self.data):
+            length = len(self.data) - lag
+        segment = self.data[-1 - lag - length: -1 - lag if lag > 0 else None]
+        return np.max(segment)
+
+    def min(self, length=1, lag=0) -> float:
+        if lag + length > len(self.data):
+            length = len(self.data) - lag
+        segment = self.data[-1 - lag - length: -1 - lag if lag > 0 else None]
+        return np.min(segment)
+
+    def std_dev(self, length=1, lag=0) -> float:
+        if lag + length > len(self.data):
+            length = len(self.data) - lag
         segment = self.data[-1 - lag - length: -1 - lag if lag > 0 else None]
         return np.std(segment)
 
-    def covariance(self, other, length=1, lag=0):
-        if isinstance(other, Stream) and lag + length <= len(self.data) and lag + length <= len(other.data):
-            x = self.data[-1 - lag - length: -1 - lag if lag > 0 else None]
-            y = other.data[-1 - lag - length: -1 - lag if lag > 0 else None]
-            return np.cov(x, y)[0, 1]  
-        return None
+    def covariance(self, other, length=1, lag=0) -> float:
+        if isinstance(other, Stream):
+            available_length = min(len(self.data) - lag, len(other.data) - lag)
+            length = min(length, available_length)
+            if length > 0:
+                x = self.data[-1 - lag - length: -1 - lag if lag > 0 else None]
+                y = other.data[-1 - lag - length: -1 - lag if lag > 0 else None]
+                return np.cov(x, y)[0, 1]
+        return 0
 
     def crossed_above(self, other, lag=0) -> bool:
         if isinstance(other, Stream):
@@ -72,7 +93,33 @@ class Stream:
 
     def is_falling(self, lag=0, length=1) -> bool:
         return self.slope(lag, length) < 0
+    
+    def average_gain(self, length=1, lag=0):
+        if lag + length > len(self.data):
+            length = len(self.data) - lag
+        segment = self.data[-1 - lag - length: -1 - lag if lag > 0 else None]
+        changes = np.diff(segment)
+        previous_values = segment[:-1]
+        valid_indices = previous_values != 0 
+        valid_changes = changes[valid_indices]
+        valid_previous_values = previous_values[valid_indices]
+        percentage_changes = valid_changes / valid_previous_values * 100
+        gains = np.where(percentage_changes > 0, percentage_changes, 0)
+        return np.mean(gains) if len(gains) > 0 else 0 
 
+    def average_loss(self, length=1, lag=0):
+        if lag + length > len(self.data):
+            length = len(self.data) - lag
+        segment = self.data[-1 - lag - length: -1 - lag if lag > 0 else None]
+        changes = np.diff(segment)
+        previous_values = segment[:-1]
+        valid_indices = previous_values != 0 
+        valid_changes = changes[valid_indices]
+        valid_previous_values = previous_values[valid_indices]
+        percentage_changes = valid_changes / valid_previous_values * 100
+        losses = np.where(percentage_changes < 0, -percentage_changes, 0)
+        return np.mean(losses) if len(losses) > 0 else 0 
+    
     def slope(self, lag=0, length=1) -> float:
         if lag + length >= len(self.data):
             return None

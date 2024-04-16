@@ -1,8 +1,9 @@
 import asyncio
 import aiosqlite
+import aiohttp
 import pandas as pd
 from log import log_general, log_transaction
-from utils import handle_sqlite_lock, handle_database_connection
+from utils import handle_sqlite_lock, handle_database_connection, handle_rate_limiting_aiohttp
 from datastructures import StreamContainer
 from wallet import find_balance
 from config import config
@@ -24,8 +25,10 @@ class Strategy(ABC):
         self.new_indicator_database_entries = None
         self.token_list = None
         self.current_holdings = None
+        self.active_price_based_exit_rule = None
         self.conn = None
         self.cur = None
+        self.session = None
         self.indicators = None
         self.indicator_cols = None
         self.indis = None
@@ -41,6 +44,24 @@ class Strategy(ABC):
         await instance.init_indicators()
         return instance
     
+    async def open_database_connection(self):
+        self.conn = await aiosqlite.connect(config().database_path)
+        self.cur = await self.conn.cursor()
+        log_general.info("SQLite Database connection opened")
+    
+    async def close_database_connection(self):
+        await self.conn.commit()
+        await self.conn.close()
+        log_general.info("SQLite Database connection closed")
+
+    async def open_aiohttp_session(self):
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+
+    async def close_aiohttp_session(self):
+        if self.session and not self.session.closed:
+            await self.session.close()
+
     async def run(self):
         await self.pre_next()
         await self.next()
@@ -61,31 +82,6 @@ class Strategy(ABC):
     @handle_database_connection()
     async def post_next(self):
         await self.insert_into_indicator_database()
-
-    async def init_indicators(self):
-        interval_indicators, indicator_cols = {}, []
-        for interval, indicators in self.indicator_dict.items():
-            indicator_instances = []
-            for name, args_list in indicators.items():
-                for args in args_list:
-                    indi = init_indicator(name, *args)
-                    self.lookback_period[interval] = max(self.lookback_period[interval], indi.length)
-                    indicator_cols.extend(indi.cols)
-                    indicator_instances.append(indi)
-            interval_indicators[interval] = indicator_instances
-        self.indicators = interval_indicators
-        indicator_cols = list(set(indicator_cols))
-        await self.init_db_columns(indicator_cols)
-
-    @handle_sqlite_lock()
-    @handle_database_connection()
-    async def init_db_columns(self, names):
-        await self.cur.execute(f"PRAGMA table_info(tradable_asset_indicators)")
-        columns = [info[1] for info in await self.cur.fetchall()]
-        for name in names:
-            if name not in columns:
-                await self.cur.execute(f"ALTER TABLE tradable_asset_indicators ADD COLUMN {name} REAL")
-                log_general.info(f"Column name: {name} added to tradable_asset_indicators")
 
     async def update_ohclv_and_indicators(self):
         self.indis = {
@@ -133,19 +129,8 @@ class Strategy(ABC):
                         [self.new_indicator_database_entries[interval], combined_interval_data], ignore_index=True
                     )
 
-    async def open_database_connection(self):
-        self.conn = await aiosqlite.connect(config().database_path)
-        self.cur = await self.conn.cursor()
-        log_general.info("SQLite Database connection opened")
-    
-    async def close_database_connection(self):
-        await self.conn.commit()
-        await self.conn.close()
-        log_general.info("SQLite Database connection closed")
-
     async def get_prices_for_all_current_holdings(self):
-        # fetch multiprice from jupiter
-        pass
+        return 
 
     async def update_trailing_stop_loss_take_profit(self):
         pass
@@ -172,19 +157,22 @@ class Strategy(ABC):
         # need to edit for total portfolio value with a max usdc pct
         self.buy_size_limit = await find_balance(self.base_token_address) * self.risk_management['portfolio_allocation_pct'] * self.risk_management['buy_size_limit_pct']
 
-    async def query_portfolio_tokens(self):
-        tokens = []
-        await self.cur.execute("SELECT DISTINCT token_address FROM portfolio_composition_by_strategy WHERE strategyID=?", (self.strategyID,))
-        rows = await self.cur.fetchall()
-        tokens = [row[0] for row in rows]
-        return tokens
+    async def fetch_multiprice_jupiter(self, token_list):
+        def batches(tokens, n):
+            for i in range(0, len(tokens), n):
+                yield tokens[i:i+n]
+        token_batches, results = list(batches(token_list, 100)), []
+        tasks = [self.fetch_price_batch(batch) for batch in token_batches]
+        batch_results = await asyncio.gather(*tasks)
+        for batch_result in batch_results:
+            results.extend(batch_result)
+        return results
 
-    async def query_tradeable_assets(self):
-        tokens = []
-        await self.cur.execute("SELECT DISTINCT token_address FROM tradeable_assets WHERE ?=TRUE", (self.strategyID,))
-        rows = await self.cur.fetchall()
-        tokens = [row[0] for row in rows]
-        return tokens
+    @handle_rate_limiting_aiohttp()
+    async def fetch_price_batch(self, token_list):
+        url = f"https://price.jup.ag/v4/price?ids={','.join(token_list)}&vsToken={self.base_token_address}"
+        async with self.session.get(url, headers=self.headers) as response:
+            return response
 
     @handle_database_connection()
     async def fetch_last_ohlcv_data(self, token_address, interval, length):
@@ -238,6 +226,22 @@ class Strategy(ABC):
         df = pd.DataFrame(data, columns=columns)
         df.set_index('unixtime', inplace=True)
         return df
+    
+    @handle_database_connection()
+    async def query_portfolio_tokens(self):
+        tokens = []
+        await self.cur.execute("SELECT DISTINCT token_address FROM portfolio_composition_by_strategy WHERE strategyID=?", (self.strategyID,))
+        rows = await self.cur.fetchall()
+        tokens = [row[0] for row in rows]
+        return tokens
+
+    @handle_database_connection()
+    async def query_tradeable_assets(self):
+        tokens = []
+        await self.cur.execute("SELECT DISTINCT token_address FROM tradeable_assets WHERE ?=TRUE", (self.strategyID,))
+        rows = await self.cur.fetchall()
+        tokens = [row[0] for row in rows]
+        return tokens
 
     @handle_database_connection()
     async def get_balance(self, token_address):
@@ -255,3 +259,28 @@ class Strategy(ABC):
                 sql = f"INSERT INTO tradeable_asset_indicators ({columns}) VALUES ({placeholders})"
                 data_tuples = [tuple(row) for row in df.itertuples(index=False, name=None)]
                 await self.cur.executemany(sql, data_tuples)
+
+    async def init_indicators(self):
+        interval_indicators, indicator_cols = {}, []
+        for interval, indicators in self.indicator_dict.items():
+            indicator_instances = []
+            for name, args_list in indicators.items():
+                for args in args_list:
+                    indi = init_indicator(name, *args)
+                    self.lookback_period[interval] = max(self.lookback_period[interval], indi.length)
+                    indicator_cols.extend(indi.cols)
+                    indicator_instances.append(indi)
+            interval_indicators[interval] = indicator_instances
+        self.indicators = interval_indicators
+        indicator_cols = list(set(indicator_cols))
+        await self.init_db_columns(indicator_cols)
+
+    @handle_sqlite_lock()
+    @handle_database_connection()
+    async def init_db_columns(self, names):
+        await self.cur.execute(f"PRAGMA table_info(tradable_asset_indicators)")
+        columns = [info[1] for info in await self.cur.fetchall()]
+        for name in names:
+            if name not in columns:
+                await self.cur.execute(f"ALTER TABLE tradable_asset_indicators ADD COLUMN {name} REAL")
+                log_general.info(f"Column name: {name} added to tradable_asset_indicators")

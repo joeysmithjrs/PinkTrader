@@ -17,6 +17,7 @@ class Indicator(ABC):
         self.length = args[0]
         self.id = self.indicator_id()
         self.cols = self.column_names()
+        self.prevs = None
         assert len(self.cols) == len(set(self.cols)), "Column names must be unique"
         if not hasattr(self, 'stream_aliases'):
             self.stream_aliases = self.default_stream_aliases()
@@ -26,7 +27,8 @@ class Indicator(ABC):
     def next(self, ohclv: StreamContainer, prevs: StreamContainer):
         data_length = len(next(iter(prevs.streams.values())).data)
         first_valid_idx = self.n_self_referential
-        all_nan_init = False  # Flag to check if any stream was initialized due to all NaNs
+        all_nan_init = False 
+        self.prevs = prevs
 
         for stream in prevs.streams.values():
             if np.isnan(stream.data[:first_valid_idx]).all():
@@ -47,7 +49,7 @@ class Indicator(ABC):
         start_idx = 0 if all_nan_init else first_valid_idx
 
         for idx in range(first_valid_idx, data_length):
-            calculated_values = self.calculate(ohclv, prevs, idx)
+            calculated_values = self.calculate(ohclv, idx)
             for alias, value in zip(self.stream_aliases, calculated_values):
                 if self.bounds:
                     value = max(min(value, self.bounds[1]), self.bounds[0])
@@ -56,7 +58,7 @@ class Indicator(ABC):
         return prevs, (start_idx, data_length - 1)
 
     @abstractmethod
-    def calculate(self):
+    def calculate(self, ohclv, prevs, idx):
         """ Implement the calculation logic for the indicator in subclasses """
         pass
 
@@ -68,7 +70,6 @@ class Indicator(ABC):
         return tuple(f"{self.id}_STREAM_{i+1}" for i in range(self.output_streams))
 
     def default_stream_aliases(self):
-        # Generate default stream aliases based on the number of output data points
         if self.output_streams == 1:
             return ['out']
         else:
@@ -77,32 +78,57 @@ class Indicator(ABC):
 class EMA(Indicator):
     category = 'price_bound'
 
-    def calculate(self, ohclv, prevs, idx):
+    def calculate(self, ohclv, idx):
         multiplier = 2 / (self.length + 1)
-        new_val = ohclv.close[idx] * multiplier + prevs.out[idx-1] * (1-multiplier)
-        return (new_val,)
+        out = ohclv.close[idx] * multiplier + self.prevs.out[idx-1] * (1-multiplier)
+        return (out,)
 
 class ATR(Indicator):
     category = 'non_zero_mean_unbounded'
     
-    def calculate(self, df):
-        # Placeholder for the ATR calculation logic
-        return df
+    def calculate(self, ohclv, idx):
+        high_low = ohclv.high[idx] - ohclv.low[idx]
+        high_close = abs(ohclv.high[idx] - ohclv.close[idx-1])
+        low_close = abs(ohclv.low[idx] - ohclv.close[idx-1])
+        tr = max(high_low, high_close, low_close)
+        out = (self.prevs.out[idx-1] * (self.length - 1) + tr) / self.length
+        return (out,)
 
 class BOLLINGER(Indicator):
     input_arguments = 2
-    output_streams = 2
-    stream_aliases = ['upper', 'lower']
+    output_streams = 3
+    stream_aliases = ['upper', 'middle', 'lower']
     category = 'price_bound'
 
     def __init__(self, *args):
         super().__init__(*args)
         self.std_devs = self.args[1]
+        self.ema_indicator = EMA(self.length)
     
-    def calculate(self, df):
-        # Placeholder for the Bollinger Bands calculation logic
-        return df
+    def calculate(self, ohclv, idx):
+        lag = len(ohclv.close.data) - 1 - idx
+        middle = ohclv.close.mean(length=self.length, lag=lag)
+        std = ohclv.close.std_dev(length=self.length, lag=lag)
+        upper = middle + std * self.std_devs
+        lower = middle - std * self.std_devs
+        return (upper, middle, lower)
+    
+class RSI(Indicator):
+    category = 'non_zero_mean_bounded'
+    bounds = (0, 100)
 
+    def calculate(self, ohclv, idx):
+        lag = len(ohclv.close.data) - 1 - idx
+        last_avg_gain = ohclv.close.average_gain(length=self.length-1, lag=lag+1)
+        last_avg_loss = ohclv.close.average_loss(length=self.length-1, lag=lag+1)
+        current_gain = ohclv.close.average_gain()
+        current_loss = ohclv.close.average_loss()
+        num = (last_avg_gain * (self.length - 1)) + current_gain
+        denom = (last_avg_loss * (self.length - 1)) + current_loss
+        div = num / denom if denom != 0 else 0
+        out = 100 - (100 / (1 + div))
+        return (out,)
+    
 def init_indicator(name, *args) -> Indicator:
     match name:
         case "EMA":
@@ -111,6 +137,8 @@ def init_indicator(name, *args) -> Indicator:
             return ATR(*args)
         case "BOLLINGER":
             return BOLLINGER(*args)
+        case "RSI":
+            return RSI(*args)
         case _:
             raise NotImplementedError(f"{name} has not been implemented correctly.")
     

@@ -27,7 +27,7 @@ def handle_rate_limiting_solana_rpc(retry_attempts=5, retry_delay=10, doubling=T
         return wrapper
     return decorator
 
-def handle_rate_limiting_birdeye(retry_attempts=5, retry_delay=10, doubling=True):
+def handle_rate_limiting_aiohttp(retry_attempts=5, retry_delay=10, doubling=True):
     def decorator(client_function):
         @wraps(client_function)
         async def wrapper(*args, **kwargs):
