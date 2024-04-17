@@ -75,17 +75,6 @@ def handle_sqlite_lock(retry_attempts=10, retry_delay=0.25, doubling=True):
         return wrapper
     return decorator
 
-def handle_database_connection(func):
-    @wraps(func)
-    async def wrapper(*args, **kwargs):
-        self = args[0]  # Assumes the first argument to the function is `self`
-        await self.open_database_connection()
-        try:
-            return await func(*args, **kwargs)
-        finally:
-            await self.close_database_connection()
-    return wrapper
-
 def handle_aiohttp_session(func):
     @wraps(func)
     async def wrapper(*args, **kwargs):

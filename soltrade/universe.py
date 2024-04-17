@@ -5,49 +5,42 @@ import aiosqlite
 import aiohttp
 from log import log_general
 from config import config
+from pooling import DatabaseConnectionPool
 from utils import *
 
 class Universe:
-
-    def __init__(self, universe_configs_path):
-        self.path = universe_configs_path
-        with open(self.path, 'r') as file:
-            self.configs = json.load(file)
-        self.universe_id = self.configs['universe_id']
-        self.platform = self.configs['platform']
-        self.token_list_sort_by = self.configs.get('token_list_sort_by')
-        self.token_list_sort_type = self.configs.get('token_list_sort_type')
-        self.page_limit = self.configs.get('token_list_page_limit')
-        self.intervals = self.configs.get('intervals')
-        self.tradeable_assets_update_minutes = self.configs.get('tradeable_assets_update_minutes')
-        self.ohclv_update_minutes = self.configs.get('ohclv_update_minutes')
-        self.api_token_fetch_limit = self.configs.get('api_token_fetch_limit')
-        self.market_cap_bins = self.configs.get('market_cap_bins')
-        self.min_hours_since_creation = self.configs.get('min_hours_since_creation')
-        self.max_top_10_holders_pct = self.configs.get('max_top_10_holders_pct')
-        self.min_liquidity = self.configs.get('min_liquidity')
-        self.min_volume_pct_market_cap_quintile = self.get('min_volume_pct_market_cap_quintile')
-        self.min_volume_change_pct_quintile = self.get('min_volume_change_pct_quintile')
+    def __init__(self, configs, db_pool):
+        self.universe_id = configs.get('universe_id')
+        self.platform = configs.get('platform')
+        self.token_list_sort_by = configs.get('token_list_sort_by')
+        self.token_list_sort_type = configs.get('token_list_sort_type')
+        self.page_limit = configs.get('token_list_page_limit')
+        self.intervals = configs.get('intervals')
+        self.tradeable_assets_update_minutes = configs.get('tradeable_assets_update_minutes')
+        self.ohclv_update_minutes = configs.get('ohclv_update_minutes')
+        self.api_token_fetch_limit = configs.get('api_token_fetch_limit')
+        self.market_cap_bins = configs.get('market_cap_bins')
+        self.min_hours_since_creation = configs.get('min_hours_since_creation')
+        self.max_top_10_holders_pct = configs.get('max_top_10_holders_pct')
+        self.min_liquidity = configs.get('min_liquidity')
+        self.min_volume_pct_market_cap_quintile = configs.get('min_volume_pct_market_cap_quintile')
+        self.min_volume_change_pct_quintile = configs.get('min_volume_change_pct_quintile')
+        self.db_pool = db_pool
         self.headers = {
             "x-chain": self.platform,
-            "X-API-KEY": config().birdeye_api_key
+            "X-API-KEY": config().get('birdeye_api_key')
         }
-        self.conn, self.cur, self.session = None, None, None
-        self.init_db_column()
+        self.session = None
 
-    async def __del__(self):
-        await self.close_database_connection()
-        await self.close_aiohttp_session()
-
-    async def open_database_connection(self):
-        self.conn = await aiosqlite.connect(config().database_path)
-        self.cur = await self.conn.cursor()
-        log_general.info("SQLite Database connection opened")
-    
-    async def close_database_connection(self):
-        await self.conn.commit()
-        await self.conn.close()
-        log_general.info("SQLite Database connection closed")
+    @classmethod
+    async def create(cls, configs, db_pool):
+        instance = cls(configs, db_pool)
+        assert instance.universe_id is not None and isinstance(instance.universe_id, str), "universe_id must be a non-empty string"
+        assert instance.platform is not None and isinstance(instance.platform, str), "platform must be a non-empty string"
+        assert instance.intervals is not None and isinstance(instance.platform, list), "intervals must be a non-empty list"
+        assert instance.db_pool is not None and isinstance(instance.db_pool, DatabaseConnectionPool), "db_pool must be a DatabaseConnectionPool object"
+        await instance.init_db_column()
+        return instance
 
     async def open_aiohttp_session(self):
         if self.session is None or self.session.closed:
@@ -57,23 +50,23 @@ class Universe:
         if self.session and not self.session.closed:
             await self.session.close()
 
-    @handle_sqlite_lock()
-    @handle_database_connection()
     async def init_db_column(self):
-        await self.cur.execute(f"PRAGMA table_info(tradeable_assets)")
-        columns = [info[1] for info in await self.cur.fetchall()]
+        query = "PRAGMA table_info(tradeable_assets)"
+        columns_info = await self.db_pool.read(query)
+        columns = [info[1] for info in columns_info]
+        
         if self.universe_id not in columns:
-            await self.cur.execute(f"ALTER TABLE tradeable_assets ADD COLUMN {self.universe_id} BOOLEAN DEFAULT FALSE")
+            alter_query = f"ALTER TABLE tradeable_assets ADD COLUMN {self.universe_id} BOOLEAN DEFAULT FALSE"
+            await self.db_pool.write(alter_query)
             
-    @handle_sqlite_lock()
     async def set_currently_tradeable_to_false(self):
-        await self.cur.execute(f"UPDATE tradeable_assets SET {self.universe_id} = FALSE")
-        await self.conn.commit()
+        update_query = f"UPDATE tradeable_assets SET {self.universe_id} = FALSE"
+        await self.db_pool.write(update_query)
 
-    @handle_sqlite_lock()
     async def set_currently_tradeable_to_true(self, token_address):
-        await self.cur.execute(f"UPDATE tradeable_assets SET {self.universe_id} = TRUE WHERE token_address = {token_address}")
-        await self.conn.commit()
+        update_query = f"UPDATE tradeable_assets SET {self.universe_id} = TRUE WHERE token_address = ?"
+        params = (token_address,)
+        await self.db_pool.write(update_query, params)
 
     @handle_rate_limiting_aiohttp()
     async def fetch_token_security_info(self, token_address):
@@ -94,45 +87,51 @@ class Universe:
             return response
     
     async def get_all_currently_tradeable_assets(self):
-        await self.cur.execute(f"SELECT token_address FROM tradeable_assets WHERE {self.universe_id} = TRUE")
-        return [row[0] for row in await self.cur.fetchall()]
+        query = f"SELECT token_address FROM tradeable_assets WHERE {self.universe_id} = TRUE"
+        rows = await self.db_pool.read(query)
+        return [row[0] for row in rows]
 
     async def token_exists_in_database(self, token_address):
-        await self.cur.execute("SELECT token_address FROM tradeable_assets WHERE token_address = ?", (token_address))
-        return await self.cur.fetchone()
+        query = "SELECT 1 FROM tradeable_assets WHERE token_address = ?"
+        params = (token_address,)
+        result = await self.db_pool.read(query, params)
+        return bool(result) 
     
     async def last_ohclv_update_unixtime(self, token_address, interval):
-        await self.cur.execute('''SELECT unixtime FROM tradeable_asset_prices WHERE token_address = ? AND interval = ? ORDER BY unixtime DESC LIMIT 1''', (token_address, interval))
-        return await self.cur.fetchone()
-    
+        query = "SELECT unixtime FROM tradeable_asset_prices WHERE token_address = ? AND interval = ? ORDER BY unixtime DESC LIMIT 1"
+        params = (token_address, interval)
+        result = await self.db_pool.read(query, params)
+        return result[0][0] if result else None
+
     async def get_token_creation_unixtime(self, token_address):
-        await self.cur.execute("SELECT creation_unixtime FROM tradeable_assets WHERE token_address = ?", (token_address))
-        return await self.cur.fetchone()
-    
-    @handle_sqlite_lock()
+        query = "SELECT creation_unixtime FROM tradeable_assets WHERE token_address = ?"
+        params = (token_address,)
+        result = await self.db_pool.read(query, params)
+        return result[0][0] if result else None
+
     async def insert_into_tradeable_assets_info(self, entry):
         now = int(time.time())
-        await self.cur.execute('''INSERT INTO tradeable_asset_info (unixtime, token_address, top_10_holders_pct, volume, 
-                    volume_change_pct, market_cap, liquidity, volume_pct_market_cap)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', (now, entry['token_address'], entry['top_10_holders_pct'], entry['volume'], 
-                    entry['volume_change_pct'], entry['market_cap'], entry['liquidity'], entry['volume_pct_market_cap']))
-        await self.conn.commit()
+        sql = '''INSERT INTO tradeable_asset_info (unixtime, token_address, top_10_holders_pct, volume, 
+                volume_change_pct, market_cap, liquidity, volume_pct_market_cap)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)'''
+        params = (now, entry['token_address'], entry['top_10_holders_pct'], entry['volume'], 
+                entry['volume_change_pct'], entry['market_cap'], entry['liquidity'], entry['volume_pct_market_cap'])
+        await self.db_pool.write(sql, params)
         log_general.info(f"token_address: {entry.get('token_address')} information updated in tradeable_assets_info for universe_id: {self.universe_id}")
-
-    @handle_sqlite_lock()
+    
     async def insert_into_tradaeble_assets(self, entry):
-        await self.cur.execute('''INSERT INTO tradeable_assets (token_address, name, symbol, platform, creation_unixtime, ?)
-                  VALUES (?, ?, ?, ?, ?)''', 
-                  (self.universe_id, entry['token_address'], entry['name'], entry['symbol'], self.platform, entry['creation_time'], True))
-        await self.conn.commit()
+        sql = '''INSERT INTO tradeable_assets (token_address, name, symbol, platform, creation_unixtime, ?)
+                VALUES (?, ?, ?, ?, ?, ?)'''
+        params = (self.universe_id, entry['token_address'], entry['name'], entry['symbol'], self.platform, entry['creation_time'], True)
+        await self.db_pool.write(sql, params)
         log_general.info(f"token_address: {entry.get('token_address')} added to tradeable_assets and set true for universe_id: {self.universe_id}")
 
-    @handle_sqlite_lock()
     async def insert_into_tradeable_asset_prices(self, token_address, entries, interval):
+        sql = '''INSERT INTO tradeable_asset_prices (token_address, unixtime, open, high, low, close, volume, interval)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)'''
         for data_point in entries:
-            await self.cur.execute('''INSERT INTO tradeable_asset_prices (token_address, unixtime, open, high, low, close, volume, interval)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', (token_address, data_point["unixTime"],data_point["o"], data_point["h"], data_point["l"], data_point["c"], data_point["v"], interval))
-        await self.conn.commit()
+            params = (token_address, data_point["unixTime"], data_point["o"], data_point["h"], data_point["l"], data_point["c"], data_point["v"], interval)
+            await self.db_pool.write(sql, params)
         log_general.info(f"{len(entries)} OHCLV data points added to tradeable_asset_prices for token_address: {token_address} interval: {interval}")
 
     async def fill_entry(self, coin):
@@ -161,7 +160,6 @@ class Universe:
 
         return entry, preliminaries
 
-    @handle_database_connection()
     @handle_aiohttp_session()
     async def fetch_coins_by_market_cap(self):
         universe = {n: [] for n in range(1, len(self.market_cap_bins) + 1)}
@@ -236,7 +234,6 @@ class Universe:
         log_general.info(f"{total_filtered_out_percentage}% of initial universe further filtered out by volume and liquidity for universe_id: {self.universe_id}")
         return filtered_universe
 
-    @handle_database_connection()
     async def update_tradeable_assets(self):
         log_general.info(f"Beginning universe selection process for universe_id: {self.universe_id}")
         universe = await self.fetch_coins_by_market_cap()
@@ -253,7 +250,6 @@ class Universe:
                 await self.insert_into_tradaeble_assets(asset)
                 await self.insert_into_tradeable_assets_info(asset)
 
-    @handle_database_connection()
     @handle_aiohttp_session()
     async def update_tradeable_asset_prices(self, interval):
         token_addresses = await self.get_all_currently_tradeable_assets()

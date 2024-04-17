@@ -3,6 +3,8 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression
 
 class Stream:
+    __slots__ = ['data']
+
     def __init__(self, data):
         self.data = self.arrange(data)
 
@@ -88,10 +90,10 @@ class Stream:
     def is_below(self, value, lag=0) -> bool:
         return self.data[-1 - lag] < value if lag < len(self.data) else False
 
-    def is_rising(self, lag=0, length=1) -> bool:
+    def is_rising(self, length=1, lag=0) -> bool:
         return self.slope(lag, length) > 0
 
-    def is_falling(self, lag=0, length=1) -> bool:
+    def is_falling(self, length=1, lag=0) -> bool:
         return self.slope(lag, length) < 0
     
     def average_gain(self, length=1, lag=0):
@@ -120,7 +122,7 @@ class Stream:
         losses = np.where(percentage_changes < 0, -percentage_changes, 0)
         return np.mean(losses) if len(losses) > 0 else 0 
     
-    def slope(self, lag=0, length=1) -> float:
+    def slope(self, length=1, lag=0) -> float:
         if lag + length >= len(self.data):
             return None
         x = np.arange(length + 1).reshape(-1, 1)
@@ -129,7 +131,7 @@ class Stream:
         model.fit(x, y)
         return float(model.coef_[0][0]) if model else 0.0
 
-    def predict(self, future_steps=1, lag=0, length=1) -> float | None:
+    def predict(self, future_steps=1, length=1, lag=0) -> float | None:
         model = self._fit_model(lag, length)
         if model:
             highest_x = length 
@@ -138,7 +140,7 @@ class Stream:
             return float(predicted_y[0][0])
         return None
 
-    def _fit_model(self, lag=0, length=1):
+    def _fit_model(self, length=1, lag=0):
         if lag + length >= len(self.data):
             return None
         x = np.arange(length + 1).reshape(-1, 1)
@@ -148,6 +150,8 @@ class Stream:
         return model
 
 class StreamContainer:
+    __slots__ = ['unixtime', 'streams']
+    
     def __init__(self, data, alias_list=None):
         if not isinstance(data, pd.DataFrame):
             raise ValueError("Data must be a pandas DataFrame")

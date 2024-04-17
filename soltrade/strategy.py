@@ -12,7 +12,7 @@ from indicators import init_indicator
 from abc import ABC, abstractmethod
 
 class Strategy(ABC):
-    def __init__(self, configs):
+    def __init__(self, configs, db_pool):
         self.strategy_id = configs.get('strategy_id')
         self.universe_id = configs.get('universe_id')
         self.lookback_period = configs.get('lookback_period', 10)
@@ -20,14 +20,13 @@ class Strategy(ABC):
         self.base_token_address = configs.get('base_token_address', None)
         self.risk_management = configs.get('risk_management', None)
         self.indicator_dict = configs.get('indicators', None)
+        self.db_pool = db_pool
 
         self.simulation_or_backtest = None
         self.new_indicator_database_entries = None
         self.token_list = None
         self.current_holdings = None
         self.active_price_based_exit_rule = None
-        self.conn = None
-        self.cur = None
         self.session = None
         self.indicators = None
         self.indicator_cols = None
@@ -43,16 +42,6 @@ class Strategy(ABC):
         assert instance.universe_id is not None and isinstance(instance.universe_id, str), "universe_id must be a non-empty string"
         await instance.init_indicators()
         return instance
-    
-    async def open_database_connection(self):
-        self.conn = await aiosqlite.connect(config().database_path)
-        self.cur = await self.conn.cursor()
-        log_general.info("SQLite Database connection opened")
-    
-    async def close_database_connection(self):
-        await self.conn.commit()
-        await self.conn.close()
-        log_general.info("SQLite Database connection closed")
 
     async def open_aiohttp_session(self):
         if self.session is None or self.session.closed:
@@ -174,83 +163,75 @@ class Strategy(ABC):
         async with self.session.get(url, headers=self.headers) as response:
             return response
 
-    @handle_database_connection()
     async def fetch_last_ohlcv_data(self, token_address, interval, length):
         columns = ['unixtime', 'open', 'high', 'low', 'close', 'volume']
-        query = f"""SELECT {','.join(columns)} 
-                    FROM tradable_asset_prices 
-                    WHERE token_address = ? 
-                    AND interval = ? 
+        query = f"""SELECT {', '.join(columns)}
+                    FROM tradable_asset_prices
+                    WHERE token_address = ?
+                    AND interval = ?
                     ORDER BY datetime 
                     DESC LIMIT ?"""
-        await self.cur.execute(query, (token_address, interval, length))
-        data = await self.cur.fetchall()
-        return pd.DataFrame(data, columns=columns)
-    
-    @handle_database_connection()
-    async def fetch_ohlcv_data_range(self, token_address, interval, unixtimestart, unixtimeend):
-        columns = ['unixtime', 'open', 'high', 'low', 'close', 'volume']
-        query = f"SELECT {','.join(columns)} FROM tradable_asset_prices FROM tradable_asset_prices WHERE token_address = ? AND interval = ? AND unixtime >= ? AND unixtime <= ? ORDER BY unixtime ASC"
-        await self.cur.execute(query, (token_address, interval, unixtimestart, unixtimeend))
-        data = await self.cur.fetchall()
-        return pd.DataFrame(data, columns=columns)
-    
-    @handle_database_connection()
-    async def fetch_indicators_data_range(self, token_address, interval, unixtimestart, unixtimeend):
-        columns = ', '.join(['unixtime'] + self.indicator_cols)
-        query = f"SELECT {columns} FROM tradable_asset_indicators  # Assuming this is the correct table name WHERE token_address = ? AND interval = ? AND unixtime >= ? AND unixtime <= ? ORDER BY unixtime ASC"
-        await self.cur.execute(query, (token_address, interval, unixtimestart, unixtimeend))
-        data = await self.cur.fetchall()
+        params = (token_address, interval, length)
+        data = await self.db_pool.read(query, params)
         return pd.DataFrame(data, columns=columns)
 
-    @handle_database_connection()
+    async def fetch_ohlcv_data_range(self, token_address, interval, unixtimestart, unixtimeend):
+        columns = ['unixtime', 'open', 'high', 'low', 'close', 'volume']
+        query = f"SELECT {', '.join(columns)} FROM tradable_asset_prices WHERE token_address = ? AND interval = ? AND unixtime >= ? AND unixtime <= ? ORDER BY unixtime ASC"
+        params = (token_address, interval, unixtimestart, unixtimeend)
+        data = await self.db_pool.read(query, params)
+        return pd.DataFrame(data, columns=columns)
+    
+    async def fetch_indicators_data_range(self, token_address, interval, unixtimestart, unixtimeend):
+        columns = ', '.join(['unixtime'] + self.indicator_cols)
+        query = f"SELECT {columns} FROM tradable_asset_indicators WHERE token_address = ? AND interval = ? AND unixtime >= ? AND unixtime <= ? ORDER BY unixtime ASC"
+        params = (token_address, interval, unixtimestart, unixtimeend)
+        data = await self.db_pool.read(query, params)
+        return pd.DataFrame(data, columns=columns.split(", "))
+    
     async def fetch_joined_ohlcv_and_indicators_data(self, token_address, interval, length, unixtimestart, unixtimeend):
         ohlcv_columns = ['unixtime', 'open', 'high', 'low', 'close', 'volume']
         indicator_columns = [f'a.{col}' for col in self.indicator_cols]
         subquery_ohlcv = f"""SELECT {', '.join(ohlcv_columns)}
-                             FROM tradable_asset_prices
-                             WHERE token_address = ? AND interval = ?
-                             ORDER BY datetime 
-                             DESC LIMIT ? """
+                            FROM tradable_asset_prices
+                            WHERE token_address = ? AND interval = ?
+                            ORDER BY datetime 
+                            DESC LIMIT ? """
         main_query = f"""WITH last_ohlcv AS ({subquery_ohlcv})
-                         SELECT last_ohlcv.*, {', '.join(indicator_columns)}
-                         FROM last_ohlcv
-                         LEFT JOIN tradable_asset_indicators a ON last_ohlcv.unixtime = a.unixtime
-                         AND last_ohlcv.token_address = a.token_address
-                         AND last_ohlcv.interval = a.interval
-                         ORDER BY last_ohlcv.unixtime ASC
-                         """
-        await self.cur.execute(main_query, (token_address, interval, length))
-        data = await self.cur.fetchall()
+                        SELECT last_ohlcv.*, {', '.join(indicator_columns)}
+                        FROM last_ohlcv
+                        LEFT JOIN tradable_asset_indicators a ON last_ohlcv.unixtime = a.unixtime
+                        AND last_ohlcv.token_address = a.token_address
+                        AND last_ohlcv.interval = a.interval
+                        ORDER BY last_ohlcv.unixtime ASC
+                        """
+        params = (token_address, interval, length)
+        data = await self.db_pool.read(main_query, params)
         columns = ohlcv_columns + self.indicator_cols
         df = pd.DataFrame(data, columns=columns)
         df.set_index('unixtime', inplace=True)
         return df
-    
-    @handle_database_connection()
+
     async def query_portfolio_tokens(self):
-        tokens = []
-        await self.cur.execute("SELECT DISTINCT token_address FROM portfolio_composition_by_strategy WHERE strategyID=?", (self.strategyID,))
-        rows = await self.cur.fetchall()
+        query = "SELECT DISTINCT token_address FROM portfolio_composition_by_strategy WHERE strategyID=?"
+        params = (self.strategyID,)
+        rows = await self.db_pool.read(query, params)
         tokens = [row[0] for row in rows]
         return tokens
-
-    @handle_database_connection()
-    async def query_tradeable_assets(self):
-        tokens = []
-        await self.cur.execute("SELECT DISTINCT token_address FROM tradeable_assets WHERE ?=TRUE", (self.strategyID,))
-        rows = await self.cur.fetchall()
-        tokens = [row[0] for row in rows]
-        return tokens
-
-    @handle_database_connection()
-    async def get_balance(self, token_address):
-        await self.cur.execute("SELECT token_balance FROM portfolio_composition_by_strategy WHERE token_address=? AND strategyID=?", (token_address, self.strategyID))
-        balance = await self.cur.fetchone()
-        return balance[0] if balance else 0
     
-    @handle_database_connection()
-    @handle_sqlite_lock()
+    async def query_tradeable_assets(self):
+        query = "SELECT DISTINCT token_address FROM tradeable_assets WHERE ?=TRUE"
+        params = (self.strategyID,)
+        rows = await self.db_pool.read(query, params)
+        tokens = [row[0] for row in rows]
+        return tokens
+
+    async def get_balance(self, token_address):
+        query = "SELECT token_balance FROM portfolio_composition_by_strategy WHERE token_address=? AND strategyID=?"
+        params = (token_address, self.strategyID)
+        balance = await self.db_pool.read(query, params)
+        return balance[0] if balance else 0
+
     async def insert_into_indicator_database(self):
         for interval, df in self.new_indicator_database_entries.items():
             if not df.empty:
@@ -258,7 +239,7 @@ class Strategy(ABC):
                 placeholders = ', '.join(['?' for _ in df.columns])
                 sql = f"INSERT INTO tradeable_asset_indicators ({columns}) VALUES ({placeholders})"
                 data_tuples = [tuple(row) for row in df.itertuples(index=False, name=None)]
-                await self.cur.executemany(sql, data_tuples)
+                await self.db_pool.write(sql, data_tuples)
 
     async def init_indicators(self):
         interval_indicators, indicator_cols = {}, []
@@ -275,12 +256,12 @@ class Strategy(ABC):
         indicator_cols = list(set(indicator_cols))
         await self.init_db_columns(indicator_cols)
 
-    @handle_sqlite_lock()
-    @handle_database_connection()
     async def init_db_columns(self, names):
-        await self.cur.execute(f"PRAGMA table_info(tradable_asset_indicators)")
-        columns = [info[1] for info in await self.cur.fetchall()]
+        query = "PRAGMA table_info(tradable_asset_indicators)"
+        columns_info = await self.db_pool.read(query)
+        columns = [info[1] for info in columns_info]
         for name in names:
             if name not in columns:
-                await self.cur.execute(f"ALTER TABLE tradable_asset_indicators ADD COLUMN {name} REAL")
-                log_general.info(f"Column name: {name} added to tradable_asset_indicators")
+                alter_query = f"ALTER TABLE tradable_asset_indicators ADD COLUMN {name} REAL"
+                await self.db_pool.write(alter_query)
+                log_general.info(f"Column {name} added to tradable_asset_indicators")
