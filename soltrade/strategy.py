@@ -3,7 +3,7 @@ import aiosqlite
 import aiohttp
 import pandas as pd
 from log import log_general, log_transaction
-from utils import handle_sqlite_lock, handle_database_connection, handle_rate_limiting_aiohttp
+from utils import handle_rate_limiting_aiohttp
 from datastructures import StreamContainer
 from wallet import find_balance
 from config import config
@@ -56,7 +56,6 @@ class Strategy(ABC):
         await self.next()
         await self.post_next()
     
-    @handle_database_connection()
     async def pre_next(self):
         self.token_list = await self.query_tradeable_assets()
         self.current_holdings = await self.query_portfolio_tokens()
@@ -68,7 +67,6 @@ class Strategy(ABC):
         """ Implement the next logic for the strategy in subclasses """
         pass
 
-    @handle_database_connection()
     async def post_next(self):
         await self.insert_into_indicator_database()
 

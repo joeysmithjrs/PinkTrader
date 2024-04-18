@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from datastructures import Stream, StreamContainer
 from abc import ABC, abstractmethod
+from log import log_general
 
 class Indicator(ABC):
     input_arguments: int = 1
@@ -32,30 +33,39 @@ class Indicator(ABC):
 
         for stream in prevs.streams.values():
             if np.isnan(stream.data[:first_valid_idx]).all():
-                all_nan_init = True  # Set flag if initializing any stream
-                if self.category in [None, 'zero_mean', 'non_zero_mean_unbounded']:
-                    default_value = 0
-                elif self.category == 'price_bound':
-                    default_value = ohclv.close[0]  # Assuming there is a 'close' stream in ohclv
-                elif self.category == 'non_zero_mean_bounded':
-                    if not self.bounds:
-                        raise ValueError("Bounds must be set for non_zero_mean_bounded category")
-                    default_value = sum(self.bounds) / 2
-                else:
-                    raise ValueError("Unknown category")
-
+                all_nan_init = True
+                default_value = self.determine_default_value(ohclv, stream)
                 stream.data[:first_valid_idx] = default_value
 
         start_idx = 0 if all_nan_init else first_valid_idx
 
         for idx in range(first_valid_idx, data_length):
-            calculated_values = self.calculate(ohclv, idx)
-            for alias, value in zip(self.stream_aliases, calculated_values):
-                if self.bounds:
-                    value = max(min(value, self.bounds[1]), self.bounds[0])
-                prevs.streams[alias].data[idx] = value
+            try:
+                calculated_values = self.calculate(ohclv, idx)
+                for alias, value in zip(self.stream_aliases, calculated_values):
+                    if self.bounds:
+                        value = max(min(value, self.bounds[1]), self.bounds[0])
+                    prevs.streams[alias].data[idx] = value
+            except Exception as e:
+                self.handle_calculation_error(e, idx)
 
         return prevs, (start_idx, data_length - 1)
+
+    def determine_default_value(self, ohclv, stream):
+        if self.category in [None, 'zero_mean', 'non_zero_mean_unbounded']:
+            return 0
+        elif self.category == 'price_bound':
+            return ohclv.close[0]
+        elif self.category == 'non_zero_mean_bounded':
+            if not self.bounds:
+                raise ValueError("Bounds must be set for non_zero_mean_bounded category")
+            return sum(self.bounds) / 2
+        else:
+            raise ValueError("Unknown category")
+
+    def handle_calculation_error(self, error, idx):
+        log_general.error(f"Error calculating indicator {self.id} at index {idx}: {str(error)}")
+        raise
 
     @abstractmethod
     def calculate(self, ohclv, prevs, idx):

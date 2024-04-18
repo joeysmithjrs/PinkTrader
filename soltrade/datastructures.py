@@ -1,12 +1,53 @@
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
+from collections import OrderedDict
+
+class MarketPosition:
+    def __init__(self, txid, token_address, entry_price, position_size):
+        self.token_address : str = token_address
+        self.avg_price : float = entry_price
+        self.current_price : float = entry_price
+        self.position_size : float = position_size
+        self.pct_open : float = 1
+        self.entries : OrderedDict = {txid: (entry_price, position_size)}
+        self.exits : OrderedDict # same format as self.entries
+        self.stop_loss: list
+        self.take_profit : list
+        self.trailing_stop_loss : list
+        self.trailing_take_profit : list
+        self.true_trailing_take_profit : list
+
+    def advise(self, current_price):
+        # accepts argument current_price 
+        # iterates through all stop_loss and take profit dicts
+        # checks for exit rules and returns 0 if no action needs to be taken 
+        # returns a value more than or equal to -1 and less than 0 if an exit is needed
+        # this value corresponds to the pct of the position that needs to sold
+
+    def add(txid, entry_price, position_size):
+        self.entries[txid] = (entry_price, position_size)
+        self.avg_price = # weighted average of price/size tuples in self.entries
+        self.position_size # sum of size value in entries value tuple minus sum of size value in exits value tuple
+        self.pct_open = 1 
+
+    def add_stop_loss(self, pct_exit = 1, pct_position = 1):
+        price = self.current_price - self.current_price * pct_exit
+        entry = (price, pct_position)
+        # check if there is an entry in self.stop_loss with a higher price that sells
+        self.stop_loss.append(entry)
+        # sort self.stop_loss list by the first tuple value descending 
+        # check if 
+
+class PositionContainer:
+    def __init__(self):
+        self.active_holdings : dict
 
 class Stream:
     __slots__ = ['data']
 
     def __init__(self, data):
-        self.data = self.arrange(data)
+        self.data : np.array = self.arrange(data)
 
     def __iter__(self):
         return iter(self.data)

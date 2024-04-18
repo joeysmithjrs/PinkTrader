@@ -13,51 +13,6 @@ from solders import message
 from soltrade.log import log_general, log_transaction
 from soltrade.config import config
 
-
-class MarketPosition:
-    def __init__(self, path):
-        self.path = path
-        self.is_open = False
-        self.sl = 0
-        self.tp = 0
-        self.load_position()
-        self.update_position(self.is_open, self.sl, self.tp)
-
-    def load_position(self):
-        if os.path.exists(self.path):
-            with open(self.path, 'r') as file:
-                position_data = json.load(file)
-                self.is_open = position_data["is_open"]
-                self.sl = position_data["sl"]
-                self.tp = position_data["tp"]
-        else:
-            self.update_position(self.is_open, self.sl, self.tp)
-            
-    def update_position(self, position, stoploss, takeprofit):
-        self.sl = stoploss
-        self.tp = takeprofit
-        self.is_open = position
-        position_obj = {
-            "is_open": position,
-            "sl": stoploss,
-            "tp": takeprofit
-        }
-        with open(self.path, 'w') as file:
-            json.dump(position_obj, file)
-
-    @property
-    def position(self):
-        return self.is_open
-    
-_market_instance = None
-
-def market(path=None):
-    global _market_instance
-    if _market_instance is None and path is not None:
-        _market_instance = MarketPosition(path)
-    return _market_instance
-
-
 # Returns the route to be manipulated in createTransaction()
 async def create_exchange(input_amount: int, input_token_mint: str) -> dict:
     log_transaction.info(f"Soltrade is creating exchange for {input_amount} {input_token_mint}")
@@ -76,7 +31,6 @@ async def create_exchange(input_amount: int, input_token_mint: str) -> dict:
     async with httpx.AsyncClient() as client:
         response = await client.get(api_link)
         return response.json()
-
 
 # Returns the swap_transaction to be manipulated in sendTransaction()
 async def create_transaction(quote: dict) -> dict:
