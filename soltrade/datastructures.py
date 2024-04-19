@@ -4,12 +4,12 @@ from sklearn.linear_model import LinearRegression
 from collections import OrderedDict
 
 class MarketPosition:
-    def __init__(self, txid, token_address, entry_price, position_size):
+    def __init__(self, txid, token_address, entry_price, position_size, dual_pct_adj=False):
         self.token_address : str = token_address
         self.avg_price : float = entry_price
         self.current_price : float = entry_price
         self.position_size : float = position_size
-        self.pct_open : float = 1
+        self.dual_pct_adj : bool = dual_pct_adj
         self.entries : OrderedDict = {txid: (entry_price, position_size)}
         self.exits : OrderedDict # same format as self.entries
         self.stop_loss: list
@@ -22,22 +22,72 @@ class MarketPosition:
         # accepts argument current_price 
         # iterates through all stop_loss and take profit dicts
         # checks for exit rules and returns 0 if no action needs to be taken 
-        # returns a value more than or equal to -1 and less than 0 if an exit is needed
-        # this value corresponds to the pct of the position that needs to sold
+        # returns a tuple of ({exit_type}, price, pct_exit)
+        # exit type is just the str conversion of class variables stop_loss, take_profit etc.
 
-    def add(txid, entry_price, position_size):
+    def confrim(self, exit):
+        # takes in argument exit = ({exit_type}, price, pct_exit) signalling a successful execution of advise()
+        # if pct_exit = 1, then we delete this class instance, logging is handled by our transactions class
+        # if pct_exit < 1, then we delete the corresponding exit condition
+        # adjust_exit_sizes(exit)
+        
+    def adjust_exit_sizes(self, exit):
+        # if dual_pct_adj is true:
+        # if we just exited a take profit with pct_exit .50 and we have a hanging stop_loss with pct_exit .50, then we must change the pct_exit of the stop_loss to 1
+        # this type of readjustment must be made across all exit conditions both take profit and stop loss. the lists will be in order of exit prices, so as we iterate through the list if the sum of the pct_exits equals 1 we, will delete the rest of the list items
+        # if dual pct_adj is false:
+        # we will do the same exact thing, however if we exit a take_profit we only readjust the trailing_take_profit and true_trailing_take_profit
+        # if we exit a stop_loss, we will only readjust the trailing_stop_loss
+
+    def add_entry(txid, entry_price, position_size):
         self.entries[txid] = (entry_price, position_size)
         self.avg_price = # weighted average of price/size tuples in self.entries
         self.position_size # sum of size value in entries value tuple minus sum of size value in exits value tuple
-        self.pct_open = 1 
 
-    def add_stop_loss(self, pct_exit = 1, pct_position = 1):
+    def remove_exit_condition(self, exit_type, idx):
+        # exit type can be 'stop_loss', 'take_profit', 'trailing_stop_loss', 'trailing_take_profit', 'true_trailing_take_profit'
+        # remove exit condition by index using getattr on exit_type
+        # do error handling on index and exit type
+
+    def get_exit_condition(self, exit_type, idx):
+        # same type of thing as remove_exit_condition except we just return the item at index instead of delete
+    
+    def add_stop_loss(self, pct_position = 1, pct_exit = 1):
         price = self.current_price - self.current_price * pct_exit
         entry = (price, pct_position)
-        # check if there is an entry in self.stop_loss with a higher price that sells
+        # check if there are entries in self.stop_loss with a higher price that have pct_exit summing to 1. If so, do not add entry
+        # if the sum of all of the entries' pct_exit including the new one is greater than 1, use log_general.warning() and readjust all pct exits to sum to 1 (divide each value by the sum)
         self.stop_loss.append(entry)
-        # sort self.stop_loss list by the first tuple value descending 
-        # check if 
+        # sort self.stop_loss list by price value descending 
+
+    def add_take_profit(self, pct_position = 1, pct_exit = 1):
+        price = self.current_price + self.current_price * pct_exit
+        entry = (price, pct_position)
+        # check if there are entries in self.take_profit with a lower price that have pct_exit summing to 1. If so, use log_general.warning() and do not add entry
+        # if the sum of all of the entries' pct_exit including the new one is greater than 1, use log_general.warning() and readjust all pct exits to sum to 1 (divide each value by the sum)
+        self.take_profit.append(entry)
+        # sort self.stop_loss list by price value descending 
+
+    def add_trailing_stop_loss(self, pct_trail, pct_exit = 1):
+        entry = (self.current_price - (self.current_price * pct_trail), pct_trail, pct_exit)
+        # check if there are entries in self.trailing_stop_loss with lower pct_trail that have pct_exit summing to 1. If so, do not add entry
+        # if the sum of all of the entries' pct_exit including the new one is greater than one, use log_general.warning() and readjust all pct exits to sum to 1 (divide each value by the sum)
+        self.trailing_stop_loss.append(entry)
+        # sort self.trailing_stop_loss by pct_trail ascending
+
+    def add_trailing_take_profit(self, profit_target_pct, pct_trail, pct_exit = 1):
+        trigger_price = self.current_price + (self.current_price * profit_target_pct)
+        entry = (None, trigger_price, pct_trail, pct_exit)
+        self.trailing_take_profit.append(entry)
+
+    def add_true_trailing_take_profit(self, pct_trail, pct_exit = 1):
+        entry = (self.current_price + (self.current_price * pct_trail), pct_trail, pct_exit)
+        # check if there are entries in self.true_trailing_take_profit with lower pct_trail that have pct_exit summing to 1. If so, do not add entry
+        # if the sum of all of the entries' pct_exit including the new one is greater than one, use log_general.warning() and readjust all pct exits to sum to 1 (divide each value by the sum)
+        self.trailing_stop_loss.append(entry)
+        # sort self.trailing_stop_loss by pct_trail ascending
+
+
 
 class PositionContainer:
     def __init__(self):
