@@ -1,97 +1,189 @@
 import numpy as np
 import pandas as pd
+from log import log_general
 from sklearn.linear_model import LinearRegression
 from collections import OrderedDict
 
 class MarketPosition:
-    def __init__(self, txid, token_address, entry_price, position_size, dual_pct_adj=False):
+    exit_types = ['take_profit', 'trailing_take_profit', 'true_trailing_take_profit', 'stop_loss', 'trailing_stop_loss']
+    __slots__ = ['token_address', 'avg_price', 'current_price', 'position_size', 'dual_pct_adj', 'entries', 'exits'] + exit_types
+
+    def __init__(self, txid, token_address, entry_price, position_size, unixtime):
         self.token_address : str = token_address
         self.avg_price : float = entry_price
         self.current_price : float = entry_price
         self.position_size : float = position_size
-        self.dual_pct_adj : bool = dual_pct_adj
-        self.entries : OrderedDict = {txid: (entry_price, position_size)}
-        self.exits : OrderedDict # same format as self.entries
-        self.stop_loss: list
-        self.take_profit : list
-        self.trailing_stop_loss : list
-        self.trailing_take_profit : list
-        self.true_trailing_take_profit : list
+        self.entries = OrderedDict({txid: (entry_price, position_size, unixtime)})
+        self.exits = OrderedDict()
+        self.last_price = self.current_price
+        self.highest_price = self.current_price
+        self.stop_loss = []
+        self.take_profit = []
+        self.trailing_stop_loss = []
+        self.trailing_take_profit = []
+        self.true_trailing_take_profit = []
 
-    def advise(self, current_price):
-        # accepts argument current_price 
-        # iterates through all stop_loss and take profit dicts
-        # checks for exit rules and returns 0 if no action needs to be taken 
-        # returns a tuple of ({exit_type}, price, pct_exit)
-        # exit type is just the str conversion of class variables stop_loss, take_profit etc.
+    def update(self, current_price):
+        self.last_price = self.current_price
+        self.current_price = current_price
+        if self.current_price > self.highest_price:
+            self.highest_price = self.current_price
+        return self._advise()
 
-    def confrim(self, exit):
-        # takes in argument exit = ({exit_type}, price, pct_exit) signalling a successful execution of advise()
-        # if pct_exit = 1, then we delete this class instance, logging is handled by our transactions class
-        # if pct_exit < 1, then we delete the corresponding exit condition
-        # adjust_exit_sizes(exit)
-        
-    def adjust_exit_sizes(self, exit):
-        # if dual_pct_adj is true:
-        # if we just exited a take profit with pct_exit .50 and we have a hanging stop_loss with pct_exit .50, then we must change the pct_exit of the stop_loss to 1
-        # this type of readjustment must be made across all exit conditions both take profit and stop loss. the lists will be in order of exit prices, so as we iterate through the list if the sum of the pct_exits equals 1 we, will delete the rest of the list items
-        # if dual pct_adj is false:
-        # we will do the same exact thing, however if we exit a take_profit we only readjust the trailing_take_profit and true_trailing_take_profit
-        # if we exit a stop_loss, we will only readjust the trailing_stop_loss
+    def confirm(self, exits):
+        exit_amt = 0
+        impacted = {key: 0 for key in self.exit_types}
+        # exits is of form exit = {txid : (exit_type, exit_pct, exit_condition_index)}
+        for txid, vals in exits.items():
+            if vals[0] in self.exit_types:
+                getattr(self, vals[0]).pop(vals[2])
+                exit = (vals[0], vals[1])
+                self.exits[txid] = exit
+                impacted[vals[0]] += vals[1]
+                exit_amt += vals[1]
+                if exit_amt >= 1:
+                    return 0
+        self.position_size -= self.position_size * exit_amt
+        impacted = {k: v for k, v in impacted.items() if v != 0}
+        self._adjust_exit_sizes(impacted)
+        return 1 - exit_amt
 
-    def add_entry(txid, entry_price, position_size):
-        self.entries[txid] = (entry_price, position_size)
-        self.avg_price = # weighted average of price/size tuples in self.entries
-        self.position_size # sum of size value in entries value tuple minus sum of size value in exits value tuple
+    def _adjust_exit_sizes(self, impacted):
+        for exit_type, pct_exit in impacted.items():
+            exit_list = getattr(self, exit_type)
+            if not exit_list:
+                continue
+            current_sum = sum(item[-1] for item in exit_list)
+            prior_sum = current_sum + pct_exit
+            if current_sum == 0:
+                continue
+            factor = prior_sum / current_sum
+            for i in range(len(exit_list)):
+                exit_list[i][-1] *= factor
+            log_general.info(f'all remaining active {exit_type} exit percentages have been multiplied by a factor of {factor} to readjust for the previous confirmed exit')
+
+    def _advise(self):
+        self._update_trailing_exits_if_needed()
+        for exit_type in self.exit_types:
+            exit_list, exit_pct_sum = self._check_exits(exit_type, exit_list, exit_pct_sum)
+            if exit_pct_sum >= 1:
+                return exit_list
+        return None
+
+    def _update_trailing_exits_if_needed(self):
+        if self.trailing_stop_loss or self.trailing_take_profit or self.true_trailing_take_profit:
+            self._update_trailing_exits()
+
+    def _check_exits(self, exit_type, exit_list, exit_pct_sum):
+        exit_attr = getattr(self, exit_type)
+        for idx, exit in enumerate(exit_attr):
+            if self._is_exit_triggered(exit_type, exit):
+                log_general.info(f'{exit_type} triggered for token_address: {self.token_address} at set_price: {exit[0]} current_price: {self.current_price}')
+                exit_list.append((exit_type, exit[-1], idx))
+            exit_pct_sum += exit[-1]
+            if exit_pct_sum >= 1:
+                return exit_list, exit_pct_sum
+        return exit_list, exit_pct_sum
+
+    def _is_exit_triggered(self, exit_type, exit):
+        match exit_type:
+            case 'stop_loss' | 'trailing_stop_loss' | 'trailing_take_profit':
+                return self.current_price <= exit[0]
+            case 'take_profit' | 'true_trailing_take_profit':
+                return self.current_price >= exit[0]
+            
+    def _update_trailing_exits(self):
+        if self.trailing_stop_loss and (self.current_price == self.highest_price):
+            for idx, exit in enumerate(self.trailing_stop_loss):
+                new_tsl = self.current_price - (self.current_price * exit[1])
+                self.trailing_stop_loss[idx][0] = new_tsl
+                log_general.info(f'trailing_stop_loss for token_address: {self.token_address} has been updated to exit_price = {new_tsl}, current_price = {self.current_price}')
+        if self.trailing_take_profit:
+            for idx, exit in enumerate(self.trailing_take_profit):
+                if (exit[0] == None) and (self.current_price >= exit[2]):
+                    new_ttp = self.current_price - (self.current_price * exit[1])
+                    self.trailing_take_profit[0] = new_ttp 
+                    log_general.info(f'trailing_take_profit for token_address: {self.token_address} has been triggered at current_price = {self.current_price}, exit_price = {new_ttp}')
+                elif (exit[0] != None) and (self.current_price == self.highest_price):
+                    new_ttp = self.current_price - (self.current_price * exit[1])
+                    self.trailing_stop_loss[idx][0] = new_ttp
+                    log_general.info(f'trailing_take_profit for token_address: {self.token_address} has been updated to exit_price = {new_ttp}, current_price = {self.current_price}')
+        if self.true_trailing_take_profit
+
+
+    def add_entry(self, txid, entry_price, position_size, unixtime):
+        self.entries[txid] = (entry_price, position_size, unixtime)
+        self._recalculate_position()
+
+    def _recalculate_position(self):
+        total_value = sum(price * size for price, size in self.entries.values())
+        total_size = sum(size for _, size in self.entries.values())
+        self.avg_price = total_value / total_size
+        self.position_size = total_size - sum(size for _, size in self.exits.values())
 
     def remove_exit_condition(self, exit_type, idx):
-        # exit type can be 'stop_loss', 'take_profit', 'trailing_stop_loss', 'trailing_take_profit', 'true_trailing_take_profit'
-        # remove exit condition by index using getattr on exit_type
-        # do error handling on index and exit type
+        exit_list = getattr(self, exit_type)
+        try:
+            del exit_list[idx]
+        except IndexError:
+            log_general.warning(f"Invalid index; attempting to remove {exit_type} from {self.token_address} position; no action taken.")
 
     def get_exit_condition(self, exit_type, idx):
-        # same type of thing as remove_exit_condition except we just return the item at index instead of delete
-    
-    def add_stop_loss(self, pct_position = 1, pct_exit = 1):
-        price = self.current_price - self.current_price * pct_exit
-        entry = (price, pct_position)
-        # check if there are entries in self.stop_loss with a higher price that have pct_exit summing to 1. If so, do not add entry
-        # if the sum of all of the entries' pct_exit including the new one is greater than 1, use log_general.warning() and readjust all pct exits to sum to 1 (divide each value by the sum)
-        self.stop_loss.append(entry)
-        # sort self.stop_loss list by price value descending 
+        exit_list = getattr(self, exit_type)
+        try:
+            return exit_list[idx]
+        except IndexError:
+            log_general.warning(f"Invalid index; attempting to remove {exit_type} from {self.token_address} position; no action taken.")
 
-    def add_take_profit(self, pct_position = 1, pct_exit = 1):
-        price = self.current_price + self.current_price * pct_exit
-        entry = (price, pct_position)
-        # check if there are entries in self.take_profit with a lower price that have pct_exit summing to 1. If so, use log_general.warning() and do not add entry
-        # if the sum of all of the entries' pct_exit including the new one is greater than 1, use log_general.warning() and readjust all pct exits to sum to 1 (divide each value by the sum)
-        self.take_profit.append(entry)
-        # sort self.stop_loss list by price value descending 
+    def add_stop_loss(self, sl_pct=0.05, pct_exit=1):
+        exit_price = self.current_price - self.current_price * sl_pct
+        exit_condition = (exit_price, pct_exit)
+        self.stop_loss.append(exit_condition)
+        self.stop_loss.sort(key=lambda x: x[0], reverse=True)
 
-    def add_trailing_stop_loss(self, pct_trail, pct_exit = 1):
-        entry = (self.current_price - (self.current_price * pct_trail), pct_trail, pct_exit)
-        # check if there are entries in self.trailing_stop_loss with lower pct_trail that have pct_exit summing to 1. If so, do not add entry
-        # if the sum of all of the entries' pct_exit including the new one is greater than one, use log_general.warning() and readjust all pct exits to sum to 1 (divide each value by the sum)
-        self.trailing_stop_loss.append(entry)
-        # sort self.trailing_stop_loss by pct_trail ascending
+    def add_take_profit(self, pct_exit=1, tp_pct=0.05):
+        exit_price = self.current_price + self.current_price * tp_pct
+        exit_condition = (exit_price, pct_exit)
+        self.take_profit.append(exit_condition)
+        self.take_profit.sort(key=lambda x: x[0], reverse=False)
 
-    def add_trailing_take_profit(self, profit_target_pct, pct_trail, pct_exit = 1):
+    def add_trailing_stop_loss(self, pct_trail, pct_exit=1):
+        exit_price = self.current_price - (self.current_price * pct_trail)
+        exit_condition = (exit_price, pct_trail, pct_exit)
+        self.trailing_stop_loss.append(exit_condition)
+        self.trailing_stop_loss.sort(key=lambda x: x[1], reverse=False)
+
+    def add_trailing_take_profit(self, profit_target_pct, pct_trail, pct_exit=1):
         trigger_price = self.current_price + (self.current_price * profit_target_pct)
-        entry = (None, trigger_price, pct_trail, pct_exit)
-        self.trailing_take_profit.append(entry)
+        exit_price = None
+        exit_condition = (exit_price, pct_trail, trigger_price, pct_exit)
+        self.trailing_take_profit.append(exit_condition)
+        self.trailing_take_profit.sort(key=lambda x: (x[0] is None, x[0]))
 
-    def add_true_trailing_take_profit(self, pct_trail, pct_exit = 1):
-        entry = (self.current_price + (self.current_price * pct_trail), pct_trail, pct_exit)
-        # check if there are entries in self.true_trailing_take_profit with lower pct_trail that have pct_exit summing to 1. If so, do not add entry
-        # if the sum of all of the entries' pct_exit including the new one is greater than one, use log_general.warning() and readjust all pct exits to sum to 1 (divide each value by the sum)
-        self.trailing_stop_loss.append(entry)
-        # sort self.trailing_stop_loss by pct_trail ascending
-
-
+    def add_true_trailing_take_profit(self, pct_trail, pct_exit=1):
+        exit_price = self.current_price + (self.current_price * pct_trail)
+        exit_condition = (exit_price, pct_trail, pct_exit)
+        self.true_trailing_take_profit.append(exit_condition)
+        self.true_trailing_take_profit.sort(key=lambda x: x[1])
 
 class PositionContainer:
-    def __init__(self):
-        self.active_holdings : dict
+    __slots__ = ['active_holdings', 'strategy_id']
+
+    def __init__(self, strategy_id):
+        self.active_holdings = OrderedDict()
+        self.strategy_id = strategy_id
+
+    def add_position(self, *args, **kwargs):
+        token_address = args[0] if len(args) > 0 else kwargs.get('token_address')
+        txid = args[1] if len(args) > 1 else kwargs.get('txid')
+        entry_price = args[2] if len(args) > 2 else kwargs.get('entry_price')
+        position_size = args[3] if len(args) > 3 else kwargs.get('position_size')
+        unixtime = args[4] if len(args) > 4 else kwargs.get('unixtime')
+
+        if None in [token_address, txid, entry_price, position_size, unixtime]:
+            raise ValueError("All required position parameters must be provided.")
+
+        self.active_holdings[token_address] = MarketPosition(txid, token_address, entry_price, position_size, unixtime)
 
 class Stream:
     __slots__ = ['data']
