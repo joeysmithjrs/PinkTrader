@@ -4,7 +4,9 @@ import aiohttp
 import pandas as pd
 from log import log_general, log_transaction
 from utils import handle_rate_limiting_aiohttp
-from datastructures import StreamContainer
+from datastructures import StreamContainer, PositionContainer
+from indicators import Indicator
+from pooling import DatabaseConnectionPool
 from wallet import find_balance
 from config import config
 from transactions import perform_swap
@@ -13,22 +15,22 @@ from abc import ABC, abstractmethod
 
 class Strategy(ABC):
     def __init__(self, configs, db_pool):
-        self.strategy_id = configs.get('strategy_id')
-        self.universe_id = configs.get('universe_id')
-        self.lookback_period = configs.get('lookback_period', 10)
-        self.check_exit_rule_minutes = configs.get('check_exit_rule_minutes', None)
-        self.base_token_address = configs.get('base_token_address', None)
-        self.risk_management = configs.get('risk_management', None)
-        self.indicator_dict = configs.get('indicators', None)
-        self.db_pool = db_pool
-
+        self.strategy_id : str = configs.get('strategy_id')
+        self.universe_id : str = configs.get('universe_id')
+        self.lookback_period : int = configs.get('lookback_period', 10)
+        self.check_exit_rule_minutes : int = configs.get('check_exit_rule_minutes', None)
+        self.base_token_address : str = configs.get('base_token_address', None)
+        self.risk_management : dict = configs.get('risk_management', None)
+        self.indicator_dict : dict = configs.get('indicators', None)
+        self.db_pool : DatabaseConnectionPool = db_pool
+        self.positions : PositionContainer = PositionContainer(self.strategy_id)        
+        self.indicators : dict[str, Indicator]
+        
         self.simulation_or_backtest = None
         self.new_indicator_database_entries = None
         self.token_list = None
-        self.current_holdings = None
         self.active_price_based_exit_rule = None
         self.session = None
-        self.indicators = None
         self.indicator_cols = None
         self.indis = None
         self.ohclv = None
@@ -263,3 +265,7 @@ class Strategy(ABC):
                 alter_query = f"ALTER TABLE tradable_asset_indicators ADD COLUMN {name} REAL"
                 await self.db_pool.write(alter_query)
                 log_general.info(f"Column {name} added to tradable_asset_indicators")
+    
+    @property 
+    def current_holdings(self):
+        return [token_address for token_address in self.positions.active_holdings.keys()]

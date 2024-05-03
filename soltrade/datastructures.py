@@ -222,6 +222,18 @@ class PositionContainer:
             raise ValueError("All required position parameters must be provided.")
 
         self.active_holdings[token_address] = MarketPosition(txid, token_address, entry_price, position_size, unixtime)
+    
+    def __getattr__(self, token : str) -> MarketPosition:
+        if token in self.active_holdings:
+            return self.active_holdings[token]
+        else:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{token}'")
+
+    def __getitem__(self, token : str) -> MarketPosition:
+        return self.active_holdings[token]
+
+    def __repr__(self):
+        return f"<StreamContainer with streams: {list(self.active_holdings.keys())}>"
 
 class Stream:
     __slots__ = ['data']
