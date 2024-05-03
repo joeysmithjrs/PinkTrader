@@ -53,19 +53,75 @@ class MarketPosition:
         self.entries[txid] = (entry_price, position_size, unixtime)
         self._recalculate_position()
     
-    def remove_exit_condition(self, exit_type : str, idx : int):
-        exit_list = getattr(self, exit_type)
+    def remove_exit_condition(self, exit_type: str, idx: int):
+        if exit_type not in self.exit_types:
+            msg = f"{exit_type} is not a valid exit type."
+            log_general.warning(msg)
+            raise ValueError(msg)
+        exit_list = getattr(self, exit_type, [])
         try:
             del exit_list[idx]
-        except IndexError:
-            log_general.warning(f"Invalid index; attempting to remove {exit_type} from {self.token_address} position; no action taken.")
+        except IndexError as e:
+            msg = f"Invalid index {idx}; attempting to remove {exit_type} from {self.token_address} position; no action taken."
+            log_general.warning(msg)
+            raise IndexError(msg)
 
-    def get_exit_condition(self, exit_type : str, idx : int) -> tuple:
-        exit_list = getattr(self, exit_type)
+    def get_exit_condition(self, exit_type: str, idx: int) -> tuple:
+        if exit_type not in self.exit_types:
+            msg = f"{exit_type} is not a valid exit type."
+            log_general.warning(msg)
+            raise ValueError(msg)
+        exit_list = getattr(self, exit_type, [])
         try:
             return exit_list[idx]
-        except IndexError:
-            log_general.warning(f"Invalid index; attempting to remove {exit_type} from {self.token_address} position; no action taken.")
+        except IndexError as e:
+            msg = f"Invalid index {idx}; attempting to access {exit_type} from {self.token_address} position; no action taken."
+            log_general.warning(msg)
+            raise IndexError(msg)
+    
+    def add_take_profit(self, tp_pct : float, pct_exit : float = 1):
+        exit_price = self.current_price + self.current_price * tp_pct
+        exit_condition = (exit_price, pct_exit)
+        self.take_profit.append(exit_condition)
+        self.take_profit.sort(key=lambda x: x[0], reverse=False)
+        log_general.info(f'{self.exit_types[0]} added for token_address: {self.token_address} with current_price = {self.current_price}, exit_price = {exit_price}, and pct_exit = {pct_exit*100}%')
+
+    def add_stop_loss(self, sl_pct : float, pct_exit : float = 1):
+        exit_price = self.current_price - self.current_price * sl_pct
+        exit_condition = (exit_price, pct_exit)
+        self.stop_loss.append(exit_condition)
+        self.stop_loss.sort(key=lambda x: x[0], reverse=True)
+        log_general.info(f'{self.exit_types[1]} added for token_address: {self.token_address} with current_price = {self.current_price}, exit_price = {exit_price}, and pct_exit = {pct_exit*100}%')
+
+    def add_trailing_take_profit(self, pct_trail : float, pct_exit : float = 1):
+        exit_price = self.current_price + (self.current_price * pct_trail)
+        exit_condition = (exit_price, pct_trail, pct_exit)
+        self.trailing_take_profit.append(exit_condition)
+        self.trailing_take_profit.sort(key=lambda x: x[1])
+        log_general.info(f'{self.exit_types[2]} added for token_address: {self.token_address} with current_price = {self.current_price}, pct_trail = {pct_trail}, and pct_exit = {pct_exit*100}%')
+
+    def add_trailing_stop_loss(self, pct_trail : float, pct_exit : float = 1):
+        exit_price = self.current_price - (self.current_price * pct_trail)
+        exit_condition = (exit_price, pct_trail, pct_exit)
+        self.trailing_stop_loss.append(exit_condition)
+        self.trailing_stop_loss.sort(key=lambda x: x[1], reverse=False)
+        log_general.info(f'{self.exit_types[3]} added for token_address: {self.token_address} with current_price = {self.current_price}, pct_trail = {pct_trail}, and pct_exit = {pct_exit*100}%')
+
+    def add_triggered_trailing_take_profit(self, profit_target_pct : float, pct_trail : float, pct_exit : float = 1):
+        trigger_price = self.current_price + (self.current_price * profit_target_pct)
+        exit_price = None
+        exit_condition = (exit_price, pct_trail, trigger_price, pct_exit)
+        self.triggered_trailing_take_profit.append(exit_condition)
+        self.triggered_trailing_take_profit.sort(key=lambda x: (x[0] is None, x[0]))
+        log_general.info(f'{self.exit_types[4]} added for token_address: {self.token_address} with current_price = {self.current_price}, trigger_price = {trigger_price}, pct_trail = {pct_trail}, and pct_exit = {pct_exit*100}%')
+
+    def add_triggered_trailing_stop_loss(self, profit_target_pct : float, pct_trail : float, pct_exit : float = 1):
+        trigger_price = self.current_price + (self.current_price * profit_target_pct)
+        exit_price = None
+        exit_condition = (exit_price, pct_trail, trigger_price, pct_exit)
+        self.triggered_trailing_stop_loss.append(exit_condition)
+        self.triggered_trailing_stop_loss.sort(key=lambda x: (x[0] is None, x[0]))
+        log_general.info(f'{self.exit_types[4]} added for token_address: {self.token_address} with current_price = {self.current_price}, trigger_price = {trigger_price}, pct_trail = {pct_trail}, and pct_exit = {pct_exit*100}%')
 
     def _adjust_exit_sizes(self, impacted : dict):
         for exit_type, pct_exit in impacted.items():
@@ -147,45 +203,7 @@ class MarketPosition:
     @property
     def _active_trailing(self) -> bool:
         return self.trailing_take_profit or self.trailing_stop_loss or self.triggered_trailing_take_profit or self.triggered_trailing_stop_loss
-
-    def add_stop_loss(self, sl_pct : float, pct_exit : float = 1):
-        exit_price = self.current_price - self.current_price * sl_pct
-        exit_condition = (exit_price, pct_exit)
-        self.stop_loss.append(exit_condition)
-        self.stop_loss.sort(key=lambda x: x[0], reverse=True)
-
-    def add_take_profit(self, tp_pct : float, pct_exit : float = 1):
-        exit_price = self.current_price + self.current_price * tp_pct
-        exit_condition = (exit_price, pct_exit)
-        self.take_profit.append(exit_condition)
-        self.take_profit.sort(key=lambda x: x[0], reverse=False)
-
-    def add_trailing_stop_loss(self, pct_trail : float, pct_exit : float = 1):
-        exit_price = self.current_price - (self.current_price * pct_trail)
-        exit_condition = (exit_price, pct_trail, pct_exit)
-        self.trailing_stop_loss.append(exit_condition)
-        self.trailing_stop_loss.sort(key=lambda x: x[1], reverse=False)
-
-    def add_trailing_take_profit(self, pct_trail : float, pct_exit : float = 1):
-        exit_price = self.current_price + (self.current_price * pct_trail)
-        exit_condition = (exit_price, pct_trail, pct_exit)
-        self.trailing_take_profit.append(exit_condition)
-        self.trailing_take_profit.sort(key=lambda x: x[1])
-
-    def add_triggered_trailing_stop_loss(self, profit_target_pct : float, pct_trail : float, pct_exit : float = 1):
-        trigger_price = self.current_price + (self.current_price * profit_target_pct)
-        exit_price = None
-        exit_condition = (exit_price, pct_trail, trigger_price, pct_exit)
-        self.triggered_trailing_stop_loss.append(exit_condition)
-        self.triggered_trailing_stop_loss.sort(key=lambda x: (x[0] is None, x[0]))
-
-    def add_triggered_trailing_take_profit(self, profit_target_pct : float, pct_trail : float, pct_exit : float = 1):
-        trigger_price = self.current_price + (self.current_price * profit_target_pct)
-        exit_price = None
-        exit_condition = (exit_price, pct_trail, trigger_price, pct_exit)
-        self.triggered_trailing_take_profit.append(exit_condition)
-        self.triggered_trailing_take_profit.sort(key=lambda x: (x[0] is None, x[0]))
-
+    
 class PositionContainer:
     __slots__ = ['active_holdings', 'strategy_id']
 
