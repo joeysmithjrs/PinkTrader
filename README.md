@@ -5,7 +5,7 @@ This open-source Python framework is designed for mid-frequency algorithmic trad
 
 ## Features
 - **Asynchronous Execution**: Leverages Python's `asyncio` library for non-blocking, concurrent code execution, enhancing performance and scalability.
-- **Data Management**: Utilizes SQLite for local data storage, ensuring fast access and reliable management of trading data.
+- **Data Management**: Utilizes SQLite for local data storage, ensuring fast access and reliable management of trading data. Uses database connection pooling to ensure smooth asynchronus access patterns. 
 - **Custom Strategy and Indicator Development**: Users can create custom strategies and indicators by extending the base classes provided.
 - **Universe Filtering**: Filter assets based on market capitalization, liquidity, and token creation time via a straightforward configuration.
 - **Multiple Trading Modes**: Supports backtesting, live simulation, and live trading. Note that backtesting requires prior data from either live trading or simulation to populate the SQLite database.
