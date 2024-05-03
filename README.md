@@ -1,7 +1,7 @@
 # Python Algorithmic Trading Framework for Solana Ecosystem
 
 ## Overview
-This open-source Python framework is designed for algorithmic trading within the Solana ecosystem. It caters especially to trading low market cap crypto assets, enabling both seasoned and novice software engineers to deploy systematic trading strategies effectively. The framework features a SQLite data management system and supports custom strategy and indicator development, making it highly customizable and robust. Built with `asyncio`, it allows for efficient asynchronous execution of trading operations.
+This open-source Python framework is designed for mid-frequency algorithmic trading within the Solana ecosystem. It caters especially to trading low market cap crypto assets, enabling both seasoned and novice software engineers to deploy systematic trading strategies effectively. The framework features a SQLite data management system and supports custom strategy and indicator development, making it highly customizable and robust. Built with `asyncio`, it allows for efficient asynchronous execution of trading operations.
 
 ## Features
 - **Asynchronous Execution**: Leverages Python's `asyncio` library for non-blocking, concurrent code execution, enhancing performance and scalability.
